@@ -1,0 +1,156 @@
+---
+# Source: softclient4es-federation/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fed-softclient4es-federation
+  labels:
+    helm.sh/chart: softclient4es-federation-0.3.0
+    app.kubernetes.io/name: softclient4es-federation
+    app.kubernetes.io/instance: fed
+    app.kubernetes.io/version: "0.2.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: federation
+    app.kubernetes.io/part-of: softclient4es
+automountServiceAccountToken: true
+---
+# Source: softclient4es-federation/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: fed-softclient4es-federation
+  labels:
+    helm.sh/chart: softclient4es-federation-0.3.0
+    app.kubernetes.io/name: softclient4es-federation
+    app.kubernetes.io/instance: fed
+    app.kubernetes.io/version: "0.2.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: federation
+    app.kubernetes.io/part-of: softclient4es
+spec:
+  type: ClusterIP
+  ports:
+    - name: flight-sql
+      port: 32020
+      targetPort: flight-sql
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: softclient4es-federation
+    app.kubernetes.io/instance: fed
+---
+# Source: softclient4es-federation/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fed-softclient4es-federation
+  labels:
+    helm.sh/chart: softclient4es-federation-0.3.0
+    app.kubernetes.io/name: softclient4es-federation
+    app.kubernetes.io/instance: fed
+    app.kubernetes.io/version: "0.2.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: federation
+    app.kubernetes.io/part-of: softclient4es
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: softclient4es-federation
+      app.kubernetes.io/instance: fed
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: softclient4es-federation
+        app.kubernetes.io/instance: fed
+    spec:
+      serviceAccountName: fed-softclient4es-federation
+      securityContext:
+        fsGroup: 1001
+        runAsGroup: 1001
+        runAsNonRoot: true
+        runAsUser: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: federation
+          image: "docker.io/softnetwork/softclient4es-federation:0.2.0"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1001
+          ports:
+            - name: flight-sql
+              containerPort: 32020
+              protocol: TCP
+            - name: health
+              containerPort: 32021
+              protocol: TCP
+          env:
+            - name: FEDERATION_HOST
+              value: "0.0.0.0"
+            - name: FEDERATION_PORT
+              value: "32020"
+            - name: FEDERATION_MAX_MEMORY
+              value: "512m"
+            - name: FEDERATION_QUERY_TIMEOUT
+              value: "30"
+            - name: FEDERATION_HEALTH_PORT
+              value: "32021"
+            - name: FEDERATION_HEALTH_PROBE_TIMEOUT
+              value: "5"
+            - name: FEDERATION_DUCKDB_PATH
+              value: ":memory:"
+            - name: FEDERATION_UPGRADE_URL
+              value: "https://portal.softclient4es.com/pricing"
+            - name: SOFTCLIENT4ES_TELEMETRY_ENABLED
+              value: "true"
+          # --- Probes (FACT A / A1): TCP-socket only for the skeleton. ---
+          # The federation health endpoint is gRPC grpc.health.v1.Health and returns
+          # NOT_SERVING while servers={} (HealthService.scala:105-111), so a gRPC Check
+          # probe would fail. A TCP probe proves the process is listening, which is the
+          # correct liveness/readiness signal for a no-downstream skeleton. Story 16.2
+          # switches readiness to a gRPC probe once sidecars exist.
+          livenessProbe:
+            tcpSocket:
+              port: health
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Readiness flips to a native gRPC probe once sidecars make the SERVING
+          # aggregate meaningful (Story 16.2). ⚠️ ALL-OR-NOTHING: any one unreachable
+          # downstream → NotReady → ALL queries fail (fail-closed). Set
+          # federation.probes.useGrpc=false to keep TCP readiness (partial availability;
+          # required on K8s < 1.27 — native gRPC probes are GA only from 1.27).
+          readinessProbe:
+            tcpSocket:
+              port: flight-sql
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            limits:
+              cpu: 1000m
+              memory: 2Gi
+            requests:
+              cpu: 500m
+              memory: 1Gi
+          volumeMounts:
+            - name: scratch
+              mountPath: /tmp
+      volumes:
+        # readOnlyRootFilesystem=true requires a writable scratch dir: the org.duckdb
+        # JDBC driver extracts its native libduckdb_java library to java.io.tmpdir (/tmp)
+        # on every boot (PersistentDuckDB is instantiated unconditionally — even with
+        # path=":memory:"), and the federation stages CTAS / INSERT-with-JOIN Parquet
+        # under java.io.tmpdir (FederationConfig.scala:266-267 → /tmp/softclient4es/scratch).
+        # A file DuckDB path (federation.duckdb.path != ":memory:") would also live here.
+        - name: scratch
+          emptyDir:
+            sizeLimit: 2Gi

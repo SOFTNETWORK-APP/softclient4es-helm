@@ -1,0 +1,334 @@
+# Number of federation Pods. Default 1 — the federation is stateless wrt query
+# routing; HA scale-out is documented at >=2 in the operator guide (16.6).
+replicaCount: 1
+
+image:
+  repository: docker.io/softnetwork/softclient4es-federation
+  # Defaults to .Chart.AppVersion when empty; override for pinning or local images.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# For authenticated DockerHub pulls (rate-limit mitigation). List of {name: <secret>}.
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  automount: true
+
+# Federation config — maps 1:1 onto arrow.flight.federation.* (FEDERATION_* env).
+# Defaults VERIFIED against federation/src/main/resources/reference.conf.
+federation:
+  maxMemory: "512m"              # FEDERATION_MAX_MEMORY  (DuckDB SET memory_limit)
+  queryTimeoutSeconds: 30        # FEDERATION_QUERY_TIMEOUT
+  health:
+    port: 32021                  # FEDERATION_HEALTH_PORT (gRPC grpc.health.v1.Health)
+    probeTimeoutSeconds: 5       # FEDERATION_HEALTH_PROBE_TIMEOUT (also K8s probe timeoutSeconds)
+  duckdb:
+    # ":memory:" = in-memory only (default). A file path enables a persistent
+    # DuckDB catalog — R2b will recommend a path on a PersistentVolume. A file
+    # path under readOnlyRootFilesystem=true MUST be on a writable mount (e.g.
+    # under /tmp, which is the writable scratch emptyDir, or a PersistentVolume).
+    path: ":memory:"             # FEDERATION_DUCKDB_PATH
+  upgradeUrl: "https://portal.softclient4es.com/pricing"   # FEDERATION_UPGRADE_URL
+  # Federation probe mode (Story 16.2). 16.1 used TCP-socket probes because a gRPC
+  # health Check returns NOT_SERVING while servers={}. Once sidecars exist the gRPC
+  # SERVING aggregate becomes meaningful, so 16.2 can flip the READINESS probe to a
+  # native gRPC probe.
+  probes:
+    # When true (default) AND at least one sidecar is configured, the federation
+    # READINESS probe is a native gRPC probe (grpc.health.v1.Health on 32021).
+    # ⚠️ The SERVING aggregate is ALL-OR-NOTHING (VERIFIED HealthService.scala:154-169:
+    #    `if (failures.isEmpty) SERVING else NOT_SERVING`): if ANY ONE downstream sidecar
+    #    is unreachable the federation Pod goes NotReady and is pulled from its Service —
+    #    so EVERY federation query fails, including ones targeting still-healthy sidecars
+    #    ("fail-closed" routing). Requires Kubernetes >= 1.27 (GA gRPC probes).
+    # Set false to keep the 16.1 TCP readiness (no K8s version floor; partial availability —
+    # the federation stays Ready and degrades per-query). On K8s 1.24-1.26 you MUST set
+    # false (use the grpc_health_probe exec fallback — see the operator guide). Liveness
+    # always stays TCP (a transient downstream blip must not kill the federation process).
+    useGrpc: true
+  # ── TLS for the federation's PUBLIC Flight SQL endpoint (Story 16.3) ──────────
+  # IMPORTANT (VERIFIED): the federation server listens PLAINTEXT gRPC only
+  # (FederationFlightServer.scala:93 Location.forGrpcInsecure; banner "plaintext only").
+  # It CANNOT terminate TLS at the pod. So TLS is terminated at an INGRESS / gateway.
+  # Enable `ingress.enabled` + set `federation.tls.secretName` to a cert-manager-issued
+  # kubernetes.io/tls Secret (tls.crt + tls.key). The chart does NOT create this Secret.
+  tls:
+    # When true, the Ingress (below) gets a tls: block referencing `secretName`.
+    # Pod-level TLS is NOT supported by the federation server (plaintext only).
+    enabled: false
+    # A kubernetes.io/tls Secret (tls.crt + tls.key), e.g. issued by cert-manager.
+    secretName: ""
+  # ── Secret-backed federation→sidecar OUTGOING credentials (Story 16.3) ────────
+  # Resolves 16.2 OQ-2. When true (default) AND a sidecar uses a Secret-backed auth
+  # method, the federation Deployment sets -Dconfig.override_with_env_vars=true and
+  # injects CONFIG_FORCE_arrow_flight_federation_servers_<name>_credentials_<key> env
+  # from the SAME Secret the sidecar reads — so the credential never lives in the
+  # ConfigMap. Requires Typesafe Config >= 1.4.0 (the federation's transitive config
+  # lib; VERIFIED >= 1.4.2 via Akka 2.6.20). Set false to require inline creds instead;
+  # a Secret-backed sidecar auth with credentialsFromEnv=false then fails at template
+  # time (the federation cannot read the Secret).
+  credentialsFromEnv: true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Ingress for the federation Flight SQL endpoint (Story 16.3). OPTIONAL.
+#
+# Flight SQL is gRPC: the Ingress controller MUST support gRPC backends, e.g. nginx:
+#   nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
+# (or use a Gateway-API / Envoy / Contour gateway). A default HTTP-only Ingress will
+# NOT proxy Flight SQL. `annotations` is free-form — populate it with your
+# cert-manager / external-DNS / ingress-controller preferences.
+ingress:
+  enabled: false
+  className: ""              # e.g. "nginx" (spec.ingressClassName)
+  annotations: {}
+  #   cert-manager.io/cluster-issuer: letsencrypt-prod
+  #   nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
+  #   external-dns.alpha.kubernetes.io/hostname: fed.example.com
+  hosts:
+    - host: ""              # e.g. fed.example.com  (empty default = no rule rendered)
+      paths:
+        - path: /
+          pathType: Prefix
+  # TLS block for the Ingress. If left empty AND federation.tls.enabled, the chart
+  # auto-fills a single entry from federation.tls.secretName + ingress.hosts[].host.
+  tls: []
+  #   - secretName: fed-tls   # kubernetes.io/tls (cert-manager issues this)
+  #     hosts:
+  #       - fed.example.com
+
+# Daily product-instance telemetry ping opt-out (Story 15.2/15.6). Top-level
+# softclient4es.telemetry.enabled → env SOFTCLIENT4ES_TELEMETRY_ENABLED.
+# DISTINCT from license.telemetry.enabled (refresh-metrics only). Set false to opt out.
+telemetry:
+  enabled: true
+
+# License credentials are referenced from a customer-provided K8s Secret (the chart
+# does NOT create Secrets — Story 16.3 covers secret-management patterns). Leave
+# secretName empty to run unlicensed (Community).
+license:
+  secretName: ""
+  licenseKeyKey: license-key    # Secret data key holding the JWT license -> SOFTCLIENT4ES_LICENSE_KEY
+  apiKeyKey: api-key            # Secret data key holding the API key      -> SOFTCLIENT4ES_API_KEY
+  # ── Offline license public-key (Story 16.5, FACT F #2) ────────────────────────
+  # OPTIONAL. When the federation must verify a license JWT WITHOUT reaching the
+  # license server's JWKS endpoint (air-gapped clusters, or a test-signed JWT whose
+  # `kid` is not in the prod JWKS), point publicKeySecretName at a Secret whose
+  # `publicKeyKey` data key holds the matching Ed25519 public JWK. It is mounted as
+  # SOFTCLIENT4ES_LICENSE_PUBLIC_KEY — the air-gap path in LicenseKeyVerifier.loadPublicKey
+  # (Step 3, VERIFIED). Leave empty (the default) to use the normal JWKS fetch. Renders
+  # NOTHING when empty, so the golden render and every shipped example are unaffected.
+  publicKeySecretName: ""
+  publicKeyKey: license-public-key   # Secret data key holding the Ed25519 public JWK -> SOFTCLIENT4ES_LICENSE_PUBLIC_KEY
+
+service:
+  type: ClusterIP
+  port: 32020                   # FEDERATION_PORT (Flight SQL)
+
+# Probes are TCP-socket (FACT A / A1). timeoutSeconds is taken from
+# federation.health.probeTimeoutSeconds in the Deployment template.
+probes:
+  liveness:
+    initialDelaySeconds: 20
+    periodSeconds: 15
+    failureThreshold: 3
+  readiness:
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    failureThreshold: 3         # aggressive for fast no-traffic routing per epic AC
+
+# Resource defaults sized for max-memory=512m DuckDB + JVM heap + Arrow off-heap
+# + DuckDB native. See Architecture Decision A4 for the math.
+resources:
+  requests:
+    memory: 1Gi
+    cpu: 500m
+  limits:
+    memory: 2Gi
+    cpu: 1000m
+
+# Writable scratch volume (emptyDir) mounted at /tmp so readOnlyRootFilesystem=true
+# still allows the DuckDB JNI native-lib extraction on boot + CTAS/INSERT-JOIN
+# Parquet staging + any non-:memory: DuckDB file.
+scratch:
+  sizeLimit: 2Gi
+
+# Pod-level security context (runAsNonRoot etc.).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1001
+  runAsGroup: 1001
+  fsGroup: 1001
+  seccompProfile:
+    type: RuntimeDefault
+
+# Container-level security context (hardening).
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1001
+  capabilities:
+    drop:
+      - ALL
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-Elasticsearch-version sidecars (Story 16.2).
+#
+# Each entry deploys ONE Arrow Flight SQL gateway Deployment + Service in front of
+# ONE Elasticsearch cluster, and registers that cluster in the federation's
+# `arrow.flight.federation.servers.<name>` map (rendered into a ConfigMap).
+#
+# LICENSING GUARDRAIL (VERIFIED — JoinLicenseGuard.guardStartup, Step 2 maxClusters):
+#   * Community (no license) permits EXACTLY ONE sidecar (maxClusters=1) — a
+#     1-sidecar deployment boots Ready with no license (the free single-cluster tier).
+#   * TWO OR MORE sidecars (len(sidecars) >= 2) require a Pro or Enterprise license
+#     — set `license.secretName` above. With NO/Community license and >=2 sidecars
+#     the federation Pod CrashLoops by design (sys.exit on the startup quota guard).
+#   * Pro allows up to 5 sidecars (maxClusters=5); Enterprise = unlimited.
+#   * NB: the Federation FEATURE is present in every tier (incl. Community); the gate
+#     is the per-tier maxClusters QUOTA, not a feature flag.
+#
+# Default: empty — the chart behaves exactly like 16.1 (federation only) when
+# `sidecars` is [].
+sidecars: []
+#   - name: prod-us                 # logical name: federation servers.<name> key AND k8s resource suffix
+#                                    #   (must be RFC1123: lowercase alphanumeric + '-', unique)
+#     elasticsearchVersion: 8        # 6 | 7 | 8 | 9  -> selects the sidecar image
+#     elasticsearch:
+#       # The backing ES cluster. `url` is DECOMPOSED into ELASTIC_SCHEME/HOST/PORT
+#       # (there is NO single ES-URL env var — VERIFIED). Either give `url`, or set
+#       # scheme/host/port explicitly (explicit fields win over url-derived ones).
+#       # `url` must be the canonical `scheme://host:port` form (no path/userinfo) —
+#       # a scheme-less url defaults to http, a port-less url to 9200; for a TLS or
+#       # non-9200 cluster supply the scheme/port or use explicit fields.
+#       url: "https://es-prod-us.example.com:9200"
+#       # scheme: https              # optional explicit override -> ELASTIC_SCHEME
+#       # host: es-prod-us...        # optional explicit override -> ELASTIC_HOST
+#       # port: 9200                 # optional explicit override -> ELASTIC_PORT
+#       # K8s Secret holding ES credentials. Keys (any subset): es-auth-method,
+#       # es-username, es-password, es-api-key, es-bearer-token. Mounted as
+#       # ELASTIC_AUTH_METHOD / ELASTIC_CREDENTIALS_* env. Chart does NOT create it.
+#       credentialsSecretName: ""
+#       # Optional (Story 16.3): override the Secret data-key names the chart reads
+#       # via secretKeyRef.key (defaults are the FACT-C contract keys shown). Use this
+#       # when your ESO/Vault template emits different key names.
+#       secretKeys:
+#         authMethod:  es-auth-method            # -> ELASTIC_AUTH_METHOD
+#         username:    es-username               # -> ELASTIC_CREDENTIALS_USERNAME
+#         password:    es-password               # -> ELASTIC_CREDENTIALS_PASSWORD
+#         apiKey:      es-api-key                # -> ELASTIC_CREDENTIALS_API_KEY
+#         bearerToken: es-bearer-token           # -> ELASTIC_CREDENTIALS_BEARER_TOKEN
+#       # Optional (Story 16.3): mount the WHOLE Secret as env (envFrom.secretRef)
+#       # instead of per-key. The Secret's data keys must then BE the env-var names
+#       # (ELASTIC_*); there is no key remapping in this mode. Default false.
+#       useEnvFrom: false
+#     replicaCount: 1                # default 1; HA = 3 (documented in README)
+#     resources: {}                  # optional per-sidecar override of sidecarDefaults.resources
+#     arrow:
+#       maxMemory: "256m"            # ARROW_JOIN_MAX_MEMORY (DuckDB JOIN engine memory)
+#       queryTimeoutSeconds: 120     # ARROW_QUERY_TIMEOUT_SECONDS
+#       batchSize: 1000              # ARROW_BATCH_SIZE
+#     # Server-side auth the sidecar enforces on incoming clients (the federation is
+#     # one such client). SINGLE SOURCE OF TRUTH: the chart renders BOTH the sidecar's
+#     # ARROW_AUTH_* env AND the federation's servers.<name>.credentials from this block.
+#     auth:
+#       method: none                 # none | basic | bearer | apikey
+#       credentialsSecretName: ""    # ONE Secret feeds BOTH the sidecar's incoming
+#                                    #   ARROW_AUTH_* AND the federation's outgoing
+#                                    #   servers.<name>.credentials (Story 16.3, FACT A).
+#                                    #   Secret keys: arrow-username/arrow-password (basic),
+#                                    #   arrow-bearer-token (bearer), arrow-api-key (apikey).
+#       # Optional (Story 16.3): override the Secret data-key names (defaults shown).
+#       secretKeys:
+#         username:    arrow-username
+#         password:    arrow-password
+#         bearerToken: arrow-bearer-token         # -> federation CONFIG_FORCE_..bearer__token
+#         apiKey:      arrow-api-key               # -> federation CONFIG_FORCE_..api__key
+#       # Optional (Story 16.3): whole-Secret envFrom mode for the SIDECAR's ARROW_AUTH_*
+#       # (the Secret's keys must then BE the env names, e.g. ARROW_AUTH_BEARER_TOKEN).
+#       # ⚠️ INCOMPATIBLE with a Secret-backed FEDERATION->sidecar credential: the federation
+#       # reads the same Secret per-key (arrow-bearer-token, …), which a whole-Secret-shaped
+#       # Secret does not carry. The chart fails fast on (method!=none + credentialsSecretName
+#       # + useEnvFrom=true). Use per-key mode (useEnvFrom=false) for a Secret-backed non-none
+#       # auth method. Default false.
+#       useEnvFrom: false
+#       # Inline creds (dev/test only) — a Secret is preferred in prod. With a Secret set,
+#       # the federation receives the value via CONFIG_FORCE_* (override_with_env_vars), so
+#       # these may be omitted (the ConfigMap then renders method-only).
+#       # username: ""               # basic
+#       # password: ""               # basic
+#       # bearerToken: ""            # bearer
+#       # apiKey: ""                 # apikey
+#     # Per-downstream OUTGOING TLS (federation -> THIS sidecar). VERIFIED separate from
+#     # federation.tls (which is the federation's own INBOUND edge TLS). Maps to
+#     # servers.<name>.tls in the ConfigMap (DownstreamConnection forGrpcTls). In R1 the
+#     # arrow sidecar listens PLAINTEXT, so this is only useful for an EXTERNAL TLS Flight
+#     # SQL backend — intra-cluster sidecars stay plaintext. Default false.
+#     tls: false
+#     default: false                 # at most ONE sidecar may be default=true (bare-table routing)
+#     alias: ""                      # optional federation schema alias (defaults to `name`)
+#     image:                         # optional override of the version-derived image
+#       repository: ""               # e.g. a custom-built sidecar
+#       tag: ""                      # defaults to .Chart.AppVersion
+
+# Shared defaults applied to every sidecar (each `sidecars[]` entry may override
+# resources via its own `resources:` key).
+sidecarDefaults:
+  image:
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      memory: 768Mi
+      cpu: 500m
+    limits:
+      memory: 1536Mi
+      cpu: 1000m
+  # Writable /tmp for the DuckDB JNI native-lib extraction (same-cluster JOIN engine).
+  scratch:
+    sizeLimit: 1Gi
+  # TCP-socket probes on ARROW_PORT (the sidecar has NO gRPC health service — VERIFIED).
+  probes:
+    liveness:
+      initialDelaySeconds: 20
+      periodSeconds: 15
+      failureThreshold: 3
+    readiness:
+      initialDelaySeconds: 5
+      periodSeconds: 10
+      failureThreshold: 3
+  # Sidecars share the same hardening as the federation (overridable).
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1001
+    runAsGroup: 1001
+    fsGroup: 1001
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 1001
+    capabilities:
+      drop:
+        - ALL
+
+# `helm test` smoke Job (Story 16.2, hardened for CI in Story 16.5). Connects to the
+# federation Flight SQL endpoint and asserts GetCatalogs (one catalog per registered
+# sidecar) == len(sidecars), with a bounded connect-retry (the federation is NotReady
+# until ALL downstreams are discovered — the gRPC readiness aggregate is all-or-nothing).
+# The default image pip-installs ADBC at runtime (needs PyPI reachability) — pin an
+# internal/pre-baked image (test.image) for air-gapped or rate-limited clusters.
+test:
+  image: ""                       # default "python:3.12-slim" when empty
+  adbcVersion: "1.6.0"            # adbc_driver_flightsql / adbc_driver_manager version (runtime pip when image not pre-baked)
