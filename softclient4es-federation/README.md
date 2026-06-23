@@ -6,9 +6,10 @@ Elasticsearch cluster (see the "Sidecars" section).
 
 With the default `sidecars: []` the chart stands up a **single federation Pod** with
 **no downstream servers** (`arrow.flight.federation.servers = {}`). Add entries to
-`sidecars[]` to federate one or more (mixed-version) Elasticsearch clusters. Later
-chart revisions add Secrets/TLS (0.3.x), topology examples, CI smoke tests, and the
-full operator guide.
+`sidecars[]` to federate one or more (mixed-version) Elasticsearch clusters. Chart
+0.3.x adds Kubernetes-Secret-backed credentials (incl. Secret-backed federation→sidecar
+auth), TLS/Ingress termination, and secret-backend examples (see "Secrets, TLS & Ingress").
+Later revisions add topology examples, CI smoke tests, and the full operator guide.
 
 ## Prerequisites
 
@@ -92,6 +93,14 @@ helm uninstall fed
 | `resources` | req `1Gi`/`500m`, lim `2Gi`/`1000m` | Container resource requests/limits. |
 | `scratch.sizeLimit` | `2Gi` | Size limit of the writable `/tmp` `emptyDir`. |
 | `federation.probes.useGrpc` | `true` | When sidecars exist, use a native gRPC readiness probe (all-or-nothing — see below). `false` keeps TCP readiness. |
+| `federation.tls.enabled` | `false` | Add a `tls:` block to the Ingress (TLS terminates at the Ingress; the pod is plaintext). See "Secrets, TLS & Ingress". |
+| `federation.tls.secretName` | `""` | A `kubernetes.io/tls` Secret (`tls.crt`+`tls.key`), e.g. cert-manager-issued. |
+| `federation.credentialsFromEnv` | `true` | Inject Secret-backed federation→sidecar creds via `CONFIG_FORCE_*` (`override_with_env_vars`). |
+| `ingress.enabled` | `false` | Render an Ingress for the federation Flight SQL endpoint (gRPC — needs a gRPC-capable controller). |
+| `ingress.className` | `""` | `spec.ingressClassName` (e.g. `nginx`). |
+| `ingress.annotations` | `{}` | Free-form annotations (cert-manager / external-DNS / `backend-protocol: "GRPC"`). |
+| `ingress.hosts` | (see `values.yaml`) | Host/path rules; an empty `host` renders no rule. |
+| `ingress.tls` | `[]` | Explicit Ingress `tls:` entries; empty + `federation.tls.enabled` auto-fills from `federation.tls.secretName`. |
 | `sidecars` | `[]` | Per-ES-version sidecars — see the "Sidecars" section below. |
 | `sidecarDefaults` | (see `values.yaml`) | Shared resource/probe/security defaults applied to every sidecar. |
 | `test.image` | `""` (→ `python:3.12-slim`) | Image for the `helm test` smoke Job; pin a pre-baked ADBC image for air-gapped clusters. |
@@ -146,12 +155,12 @@ So a **single-cluster** federation runs with NO license. The moment you add a
 ### Per-sidecar / federation auth (single source of truth)
 A single `sidecars[].auth` block drives BOTH the sidecar's incoming `ARROW_AUTH_*`
 auth AND the federation's outgoing `servers.<name>.credentials`. `method: none`
-(default, intra-cluster trust) is the common case. For `basic`/`bearer`/`apikey`,
-the sidecar side may use a Secret (`auth.credentialsSecretName`), but the
-federation-outgoing side can only be rendered from INLINE values in this chart
-revision (a ConfigMap cannot reference a Secret) — the template fails fast with an
-actionable message if you set a non-`none` method without inline creds. Secret-backed
-federation→sidecar auth is added in chart 0.3.x.
+(default, intra-cluster trust) is the common case. For `basic`/`bearer`/`apikey`, the
+SAME `auth.credentialsSecretName` Secret now feeds both sides (chart 0.3.x): the sidecar
+reads `ARROW_AUTH_*` and the federation receives the value via `CONFIG_FORCE_*`
+(`override_with_env_vars`) — see "Secrets, TLS & Ingress" below. Inline values are still
+accepted for dev/test; the template fails fast with an actionable message if you set a
+non-`none` method with neither a Secret nor inline creds.
 
 ### Cross-namespace deployments
 Default is same-namespace (the ConfigMap uses `<svc>.<release-namespace>.svc...`).
@@ -175,19 +184,104 @@ Flight SQL endpoint and asserts `GetCatalogs` returns one catalog per sidecar
 (`len(sidecars)`). The 2-sidecar smoke requires a Pro/Enterprise license (the quota
 gate above) and reachable backing ES for each sidecar.
 
+## Secrets, TLS & Ingress
+
+The chart **references** Kubernetes Secrets by name and never creates them. See
+[`docs/secret-backends.md`](docs/secret-backends.md) for how to create them (raw /
+SealedSecrets / ESO / Vault), and `examples/sealed-secrets/` + `examples/external-secrets/`
+for ready-to-adapt manifests.
+
+### Secret key-name contract
+Each referenced Secret must carry these data keys (override per-sidecar via `secretKeys`):
+
+| values.yaml field | Secret data keys |
+|---|---|
+| `sidecars[].elasticsearch.credentialsSecretName` | `es-auth-method`, `es-username`, `es-password`, `es-api-key`, `es-bearer-token` |
+| `sidecars[].auth.credentialsSecretName` | `arrow-username`, `arrow-password`, `arrow-bearer-token`, `arrow-api-key` |
+| `license.secretName` | `license-key`, `api-key` |
+| `federation.tls.secretName` | `tls.crt`, `tls.key` (`kubernetes.io/tls`) |
+
+Override the data-key names per sidecar with `elasticsearch.secretKeys` / `auth.secretKeys`,
+or mount the whole Secret as env with `useEnvFrom: true` (the Secret's keys must then BE the
+env-var names — no remapping).
+
+> **A Secret with the WRONG keys is silent at install time.** The chart's `secretKeyRef`s are
+> `optional: true`, so a key-name mismatch (or a Secret not created/synced yet) does NOT fail
+> `helm install` — the env is simply absent, and the federation then CrashLoops at boot with a
+> `FlightCredentials`/`validate()` credentials error (the sidecar may start but fail its ES/auth
+> connection). If a pod CrashLoops right after a Secret-backed install, check: the Secret EXISTS
+> (`kubectl get secret <name>`), its data keys MATCH this table
+> (`kubectl get secret <name> -o jsonpath='{.data}'`), and — for ESO/SealedSecrets — it has
+> MATERIALIZED (`kubectl get externalsecret` / `kubectl get sealedsecret`, sealed for THIS
+> namespace). An ESO sync-lag CrashLoop **self-heals** on the next restart once the Secret
+> appears — do not uninstall prematurely.
+
+### Federation → sidecar credentials (single Secret, both sides)
+ONE `sidecars[].auth.credentialsSecretName` feeds BOTH the sidecar's incoming `ARROW_AUTH_*`
+AND the federation's outgoing auth to that sidecar. Because a ConfigMap cannot read a Secret,
+the federation receives the credential via Typesafe Config `override_with_env_vars`: the chart
+sets `-Dconfig.override_with_env_vars=true` and injects
+`CONFIG_FORCE_arrow_flight_federation_servers_<name>_credentials_<key>` env from the Secret
+(toggle: `federation.credentialsFromEnv`, default `true`). The ConfigMap renders only the
+`method` (not secret); the value arrives from the Secret. **Sidecar names must be strict
+RFC1123 labels** — the name is mangled into the `CONFIG_FORCE_*` path, and a `_`/`.`/uppercase
+would silently mis-target it (the template fails fast on a non-RFC1123 name). `auth.useEnvFrom`
+(whole-Secret mode) is **incompatible** with a Secret-backed federation→sidecar credential —
+the federation reads the Secret per-key (`arrow-bearer-token`, …), which a whole-Secret-shaped
+Secret does not carry — so the chart fails fast on that combination; use the per-key default
+(`useEnvFrom: false`) for any non-`none` Secret-backed auth method.
+
+> **Rotation needs a restart.** Env-from-Secret is read at Pod start, so rotating the Secret
+> value needs `kubectl rollout restart deploy/<fullname>` (or a reloader of your choice). When
+> ONE Secret feeds BOTH the sidecar (`ARROW_AUTH_*`) and the federation (`CONFIG_FORCE_*`),
+> restart BOTH Deployments or the two sides drift (the federation presents the old credential
+> to a sidecar that now expects the new one).
+
+### `auth.method=none` + a Secret (benign)
+Setting `auth.credentialsSecretName` while `auth.method: none` is harmless — the sidecar's
+server-side auth is off, the injected `ARROW_AUTH_*` env are ignored, and the federation emits
+no `CONFIG_FORCE_*` for that sidecar. The chart does NOT fail this (you may pre-stage a Secret
+before flipping `method`); just note the Secret has no effect until `method` is non-`none`.
+
+### TLS (at the Ingress, not the Pod)
+The federation Flight SQL server listens **plaintext gRPC only** — it does NOT terminate TLS.
+Terminate TLS at an Ingress/gateway: set `federation.tls.enabled` + `federation.tls.secretName`
+(a cert-manager `kubernetes.io/tls` Secret) and `ingress.enabled`. Flight SQL is gRPC, so the
+Ingress controller MUST proxy gRPC backends with `backend-protocol: "GRPC"` (**NOT** `GRPCS` —
+the pod is plaintext; the Ingress terminates TLS and forwards cleartext h2c), or use a
+Gateway-API gateway. nginx-ingress speaks HTTP/2 to clients only over a TLS listener, so
+Flight-SQL-over-Ingress in practice means TLS-at-the-edge; for plaintext in-cluster access, hit
+the ClusterIP/LoadBalancer Service (`32020`) directly rather than a plaintext Ingress.
+`sidecars[].tls: true` is a SEPARATE knob — it makes the federation connect to THAT sidecar over
+TLS (the outgoing hop), unrelated to the federation's own inbound edge TLS.
+
+### Example currency
+The `examples/external-secrets/` use `external-secrets.io/v1` (the stable API; `v1beta1` was
+removed at ESO v0.17.0). The `examples/sealed-secrets/` reference the post-move repo
+`bitnami.github.io` and are NON-FUNCTIONAL placeholders that MUST be re-sealed per cluster (and
+per namespace — SealedSecrets are namespace-scoped by default).
+
 ## Regenerating the golden render
 
 The committed render baselines under `tests/golden/` let a future PR detect template
-drift: `default.yaml` (0 sidecars) and `two-sidecars.yaml` (federation + 2 mixed
-ES8/ES9 sidecars, rendered from `tests/values/two-sidecars.yaml`). Regenerate (and
+drift: `default.yaml` (0 sidecars), `two-sidecars.yaml` (federation + 2 mixed ES8/ES9
+sidecars), `secret-auth.yaml` (1 sidecar, Secret-backed ES + sidecar bearer auth +
+federation `CONFIG_FORCE_*`), and `ingress-tls.yaml` (federation behind a cert-manager
+TLS Ingress). Regenerate (and
 review the diff) with:
 
 ```sh
 helm template fed ./softclient4es-federation > ./softclient4es-federation/tests/golden/default.yaml
 helm template fed ./softclient4es-federation -f ./softclient4es-federation/tests/values/two-sidecars.yaml \
   > ./softclient4es-federation/tests/golden/two-sidecars.yaml
+helm template fed ./softclient4es-federation -f ./softclient4es-federation/tests/values/secret-auth.yaml \
+  > ./softclient4es-federation/tests/golden/secret-auth.yaml
+helm template fed ./softclient4es-federation -f ./softclient4es-federation/tests/values/ingress-tls.yaml \
+  > ./softclient4es-federation/tests/golden/ingress-tls.yaml
 git diff --stat ./softclient4es-federation/tests/golden/
 ```
 
 Any diff must be intentional. CI (Story 16.5) enforces these goldens plus `helm lint`
-and `kubeconform -strict` (including a 2-sidecar mixed-version render).
+and `kubeconform -strict` (including the 2-sidecar, Secret-backed, and TLS/Ingress renders).
+The chart `templates/` must emit ZERO `kind: Secret` — assert with
+`helm template fed ./softclient4es-federation -f … | grep -c '^kind: Secret'` (expected `0`).

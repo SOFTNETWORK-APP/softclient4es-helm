@@ -52,6 +52,55 @@ federation:
     # false (use the grpc_health_probe exec fallback — see the operator guide). Liveness
     # always stays TCP (a transient downstream blip must not kill the federation process).
     useGrpc: true
+  # ── TLS for the federation's PUBLIC Flight SQL endpoint (Story 16.3) ──────────
+  # IMPORTANT (VERIFIED): the federation server listens PLAINTEXT gRPC only
+  # (FederationFlightServer.scala:93 Location.forGrpcInsecure; banner "plaintext only").
+  # It CANNOT terminate TLS at the pod. So TLS is terminated at an INGRESS / gateway.
+  # Enable `ingress.enabled` + set `federation.tls.secretName` to a cert-manager-issued
+  # kubernetes.io/tls Secret (tls.crt + tls.key). The chart does NOT create this Secret.
+  tls:
+    # When true, the Ingress (below) gets a tls: block referencing `secretName`.
+    # Pod-level TLS is NOT supported by the federation server (plaintext only).
+    enabled: false
+    # A kubernetes.io/tls Secret (tls.crt + tls.key), e.g. issued by cert-manager.
+    secretName: ""
+  # ── Secret-backed federation→sidecar OUTGOING credentials (Story 16.3) ────────
+  # Resolves 16.2 OQ-2. When true (default) AND a sidecar uses a Secret-backed auth
+  # method, the federation Deployment sets -Dconfig.override_with_env_vars=true and
+  # injects CONFIG_FORCE_arrow_flight_federation_servers_<name>_credentials_<key> env
+  # from the SAME Secret the sidecar reads — so the credential never lives in the
+  # ConfigMap. Requires Typesafe Config >= 1.4.0 (the federation's transitive config
+  # lib; VERIFIED >= 1.4.2 via Akka 2.6.20). Set false to require inline creds instead;
+  # a Secret-backed sidecar auth with credentialsFromEnv=false then fails at template
+  # time (the federation cannot read the Secret).
+  credentialsFromEnv: true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Ingress for the federation Flight SQL endpoint (Story 16.3). OPTIONAL.
+#
+# Flight SQL is gRPC: the Ingress controller MUST support gRPC backends, e.g. nginx:
+#   nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
+# (or use a Gateway-API / Envoy / Contour gateway). A default HTTP-only Ingress will
+# NOT proxy Flight SQL. `annotations` is free-form — populate it with your
+# cert-manager / external-DNS / ingress-controller preferences.
+ingress:
+  enabled: false
+  className: ""              # e.g. "nginx" (spec.ingressClassName)
+  annotations: {}
+  #   cert-manager.io/cluster-issuer: letsencrypt-prod
+  #   nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
+  #   external-dns.alpha.kubernetes.io/hostname: fed.example.com
+  hosts:
+    - host: ""              # e.g. fed.example.com  (empty default = no rule rendered)
+      paths:
+        - path: /
+          pathType: Prefix
+  # TLS block for the Ingress. If left empty AND federation.tls.enabled, the chart
+  # auto-fills a single entry from federation.tls.secretName + ingress.hosts[].host.
+  tls: []
+  #   - secretName: fed-tls   # kubernetes.io/tls (cert-manager issues this)
+  #     hosts:
+  #       - fed.example.com
 
 # Daily product-instance telemetry ping opt-out (Story 15.2/15.6). Top-level
 # softclient4es.telemetry.enabled → env SOFTCLIENT4ES_TELEMETRY_ENABLED.
@@ -160,6 +209,19 @@ sidecars: []
 #       # es-username, es-password, es-api-key, es-bearer-token. Mounted as
 #       # ELASTIC_AUTH_METHOD / ELASTIC_CREDENTIALS_* env. Chart does NOT create it.
 #       credentialsSecretName: ""
+#       # Optional (Story 16.3): override the Secret data-key names the chart reads
+#       # via secretKeyRef.key (defaults are the FACT-C contract keys shown). Use this
+#       # when your ESO/Vault template emits different key names.
+#       secretKeys:
+#         authMethod:  es-auth-method            # -> ELASTIC_AUTH_METHOD
+#         username:    es-username               # -> ELASTIC_CREDENTIALS_USERNAME
+#         password:    es-password               # -> ELASTIC_CREDENTIALS_PASSWORD
+#         apiKey:      es-api-key                # -> ELASTIC_CREDENTIALS_API_KEY
+#         bearerToken: es-bearer-token           # -> ELASTIC_CREDENTIALS_BEARER_TOKEN
+#       # Optional (Story 16.3): mount the WHOLE Secret as env (envFrom.secretRef)
+#       # instead of per-key. The Secret's data keys must then BE the env-var names
+#       # (ELASTIC_*); there is no key remapping in this mode. Default false.
+#       useEnvFrom: false
 #     replicaCount: 1                # default 1; HA = 3 (documented in README)
 #     resources: {}                  # optional per-sidecar override of sidecarDefaults.resources
 #     arrow:
@@ -171,16 +233,38 @@ sidecars: []
 #     # ARROW_AUTH_* env AND the federation's servers.<name>.credentials from this block.
 #     auth:
 #       method: none                 # none | basic | bearer | apikey
-#       credentialsSecretName: ""    # Secret keys: arrow-username/arrow-password (basic),
+#       credentialsSecretName: ""    # ONE Secret feeds BOTH the sidecar's incoming
+#                                    #   ARROW_AUTH_* AND the federation's outgoing
+#                                    #   servers.<name>.credentials (Story 16.3, FACT A).
+#                                    #   Secret keys: arrow-username/arrow-password (basic),
 #                                    #   arrow-bearer-token (bearer), arrow-api-key (apikey).
-#                                    #   Mounted into the sidecar as ARROW_AUTH_* env.
-#       # Inline creds for the FEDERATION->sidecar (outgoing) hop ONLY (rendered into the
-#       # ConfigMap; a ConfigMap cannot reference a Secret, so a non-none method REQUIRES
-#       # these inline in 16.2 — Secret-backed federation-side auth is Story 16.3):
+#       # Optional (Story 16.3): override the Secret data-key names (defaults shown).
+#       secretKeys:
+#         username:    arrow-username
+#         password:    arrow-password
+#         bearerToken: arrow-bearer-token         # -> federation CONFIG_FORCE_..bearer__token
+#         apiKey:      arrow-api-key               # -> federation CONFIG_FORCE_..api__key
+#       # Optional (Story 16.3): whole-Secret envFrom mode for the SIDECAR's ARROW_AUTH_*
+#       # (the Secret's keys must then BE the env names, e.g. ARROW_AUTH_BEARER_TOKEN).
+#       # ⚠️ INCOMPATIBLE with a Secret-backed FEDERATION->sidecar credential: the federation
+#       # reads the same Secret per-key (arrow-bearer-token, …), which a whole-Secret-shaped
+#       # Secret does not carry. The chart fails fast on (method!=none + credentialsSecretName
+#       # + useEnvFrom=true). Use per-key mode (useEnvFrom=false) for a Secret-backed non-none
+#       # auth method. Default false.
+#       useEnvFrom: false
+#       # Inline creds (dev/test only) — a Secret is preferred in prod. With a Secret set,
+#       # the federation receives the value via CONFIG_FORCE_* (override_with_env_vars), so
+#       # these may be omitted (the ConfigMap then renders method-only).
 #       # username: ""               # basic
 #       # password: ""               # basic
 #       # bearerToken: ""            # bearer
 #       # apiKey: ""                 # apikey
+#     # Per-downstream OUTGOING TLS (federation -> THIS sidecar). VERIFIED separate from
+#     # federation.tls (which is the federation's own INBOUND edge TLS). Maps to
+#     # servers.<name>.tls in the ConfigMap (DownstreamConnection forGrpcTls). In R1 the
+#     # arrow sidecar listens PLAINTEXT, so this is only useful for an EXTERNAL TLS Flight
+#     # SQL backend — intra-cluster sidecars stay plaintext. Default false.
+#     tls: false
 #     default: false                 # at most ONE sidecar may be default=true (bare-table routing)
 #     alias: ""                      # optional federation schema alias (defaults to `name`)
 #     image:                         # optional override of the version-derived image

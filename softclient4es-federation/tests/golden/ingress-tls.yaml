@@ -40,10 +40,6 @@ data:
           port = 32010
           default = true
         }
-        prod-eu {
-          host = "fed-softclient4es-federation-prod-eu.default.svc.cluster.local"
-          port = 32010
-        }
       }
     }
 ---
@@ -98,33 +94,6 @@ spec:
     app.kubernetes.io/component: sidecar
     softclient4es.app/sidecar: prod-us
 ---
-# Source: softclient4es-federation/templates/sidecar-service.yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: fed-softclient4es-federation-prod-eu
-  labels:
-    helm.sh/chart: softclient4es-federation-0.3.0
-    app.kubernetes.io/name: softclient4es-federation
-    app.kubernetes.io/instance: fed
-    app.kubernetes.io/component: sidecar
-    softclient4es.app/sidecar: prod-eu
-    app.kubernetes.io/version: "0.2.0"
-    app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/part-of: softclient4es
-spec:
-  type: ClusterIP
-  ports:
-    - name: flight-sql
-      port: 32010
-      targetPort: flight-sql
-      protocol: TCP
-  selector:
-    app.kubernetes.io/name: softclient4es-federation
-    app.kubernetes.io/instance: fed
-    app.kubernetes.io/component: sidecar
-    softclient4es.app/sidecar: prod-eu
----
 # Source: softclient4es-federation/templates/deployment.yaml
 apiVersion: apps/v1
 kind: Deployment
@@ -152,7 +121,7 @@ spec:
       annotations:
         # Roll the federation Pod whenever the rendered servers ConfigMap changes
         # (add/remove/edit a sidecar) so `helm upgrade` actually takes effect.
-        checksum/config: 24fa1a5267bbb746f19103e9801a86915f61bb22678cde9321901bf3ec41c2fb
+        checksum/config: 09457749b0df680bf9a554b7867d5434503be84e4aa95d470b279614c251837e
     spec:
       serviceAccountName: fed-softclient4es-federation
       securityContext:
@@ -200,18 +169,6 @@ spec:
               value: "https://portal.softclient4es.com/pricing"
             - name: SOFTCLIENT4ES_TELEMETRY_ENABLED
               value: "true"
-            - name: SOFTCLIENT4ES_LICENSE_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: sc4es-license
-                  key: license-key
-                  optional: true
-            - name: SOFTCLIENT4ES_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: sc4es-license
-                  key: api-key
-                  optional: true
             # Point Typesafe Config at the mounted ConfigMap so ConfigFactory.load()
             # picks up the `servers` map (which has NO env override). The native-packager
             # bash launcher reads $JAVA_OPTS at runtime (VERIFIED) and prepends it to the
@@ -347,36 +304,6 @@ spec:
               value: "es-us.example.com"
             - name: ELASTIC_PORT
               value: "9200"
-            - name: ELASTIC_AUTH_METHOD
-              valueFrom:
-                secretKeyRef:
-                  name: es-us-creds
-                  key: es-auth-method
-                  optional: true
-            - name: ELASTIC_CREDENTIALS_USERNAME
-              valueFrom:
-                secretKeyRef:
-                  name: es-us-creds
-                  key: es-username
-                  optional: true
-            - name: ELASTIC_CREDENTIALS_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: es-us-creds
-                  key: es-password
-                  optional: true
-            - name: ELASTIC_CREDENTIALS_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: es-us-creds
-                  key: es-api-key
-                  optional: true
-            - name: ELASTIC_CREDENTIALS_BEARER_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: es-us-creds
-                  key: es-bearer-token
-                  optional: true
             # ── Sidecar SERVER-SIDE auth (incoming) — single source of truth with the
             #    federation's outgoing servers.<name>.credentials (rendered in the ConfigMap) ──
             # ── Telemetry opt-out (shared with federation) ──
@@ -387,18 +314,6 @@ spec:
             # so the chart MUST set it explicitly here for the opt-out to reach the sidecar.
             - name: SOFTCLIENT4ES_TELEMETRY_ENABLED
               value: "true"
-            - name: SOFTCLIENT4ES_LICENSE_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: sc4es-license
-                  key: license-key
-                  optional: true
-            - name: SOFTCLIENT4ES_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: sc4es-license
-                  key: api-key
-                  optional: true
           # TCP probes — the sidecar has NO gRPC health service (VERIFIED); a raw TCP
           # connect to ARROW_PORT proves the Flight SQL server is listening.
           livenessProbe:
@@ -432,165 +347,44 @@ spec:
           emptyDir:
             sizeLimit: 1Gi
 ---
-# Source: softclient4es-federation/templates/sidecar-deployment.yaml
-apiVersion: apps/v1
-kind: Deployment
+# Source: softclient4es-federation/templates/ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
 metadata:
-  name: fed-softclient4es-federation-prod-eu
+  name: fed-softclient4es-federation
   labels:
     helm.sh/chart: softclient4es-federation-0.3.0
     app.kubernetes.io/name: softclient4es-federation
     app.kubernetes.io/instance: fed
-    app.kubernetes.io/component: sidecar
-    softclient4es.app/sidecar: prod-eu
     app.kubernetes.io/version: "0.2.0"
     app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: federation
     app.kubernetes.io/part-of: softclient4es
+  annotations:
+    # Flight SQL is gRPC — the controller MUST proxy gRPC backends, e.g. nginx:
+    #   nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
+    # (NOT "GRPCS": the federation Pod is PLAINTEXT h2c upstream — the Ingress terminates
+    # client TLS and forwards cleartext to the pod). HTTP/2-to-client needs a TLS listener,
+    # so a plaintext Ingress will not proxy Flight SQL — TLS-at-the-edge is the supported path.
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/backend-protocol: GRPC
 spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: softclient4es-federation
-      app.kubernetes.io/instance: fed
-      app.kubernetes.io/component: sidecar
-      softclient4es.app/sidecar: prod-eu
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/name: softclient4es-federation
-        app.kubernetes.io/instance: fed
-        app.kubernetes.io/component: sidecar
-        softclient4es.app/sidecar: prod-eu
-    spec:
-      serviceAccountName: fed-softclient4es-federation
-      securityContext:
-        fsGroup: 1001
-        runAsGroup: 1001
-        runAsNonRoot: true
-        runAsUser: 1001
-        seccompProfile:
-          type: RuntimeDefault
-      containers:
-        - name: sidecar
-          image: "docker.io/softnetwork/softclient4es9-arrow-flight-sql:0.2.0"
-          imagePullPolicy: IfNotPresent
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop:
-              - ALL
-            readOnlyRootFilesystem: true
-            runAsNonRoot: true
-            runAsUser: 1001
-          ports:
-            - name: flight-sql
-              containerPort: 32010
-              protocol: TCP
-          env:
-            # ── Arrow Flight SQL server (arrow.flight.*) ──
-            - name: ARROW_HOST
-              value: "0.0.0.0"
-            - name: ARROW_PORT
-              value: "32010"
-            - name: ARROW_BATCH_SIZE
-              value: "1000"
-            - name: ARROW_QUERY_TIMEOUT_SECONDS
-              value: "120"
-            - name: ARROW_JOIN_MAX_MEMORY
-              value: "256m"
-            - name: ARROW_JOIN_UPGRADE_URL
-              value: "https://portal.softclient4es.com/pricing"
-            # ── Elasticsearch connection (elastic.credentials.* — VERIFIED, NOT a single URL) ──
-            - name: ELASTIC_SCHEME
-              value: "https"
-            - name: ELASTIC_HOST
-              value: "es-eu.example.com"
-            - name: ELASTIC_PORT
-              value: "9200"
-            - name: ELASTIC_AUTH_METHOD
-              valueFrom:
-                secretKeyRef:
-                  name: es-eu-creds
-                  key: es-auth-method
-                  optional: true
-            - name: ELASTIC_CREDENTIALS_USERNAME
-              valueFrom:
-                secretKeyRef:
-                  name: es-eu-creds
-                  key: es-username
-                  optional: true
-            - name: ELASTIC_CREDENTIALS_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: es-eu-creds
-                  key: es-password
-                  optional: true
-            - name: ELASTIC_CREDENTIALS_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: es-eu-creds
-                  key: es-api-key
-                  optional: true
-            - name: ELASTIC_CREDENTIALS_BEARER_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: es-eu-creds
-                  key: es-bearer-token
-                  optional: true
-            # ── Sidecar SERVER-SIDE auth (incoming) — single source of truth with the
-            #    federation's outgoing servers.<name>.credentials (rendered in the ConfigMap) ──
-            # ── Telemetry opt-out (shared with federation) ──
-            # VERIFIED: SOFTCLIENT4ES_TELEMETRY_ENABLED is honored by the sidecar too — the env
-            # override lives in elasticsql licensing reference.conf:30 (softclient4es.telemetry.enabled),
-            # read by TelemetryConfig.load, on which the arrow sidecar depends transitively. NOTE it is
-            # NOT in arrowServerSettings.dockerEnvVars (build.sbt:243-255 bakes only ELASTIC_*/ARROW_*),
-            # so the chart MUST set it explicitly here for the opt-out to reach the sidecar.
-            - name: SOFTCLIENT4ES_TELEMETRY_ENABLED
-              value: "true"
-            - name: SOFTCLIENT4ES_LICENSE_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: sc4es-license
-                  key: license-key
-                  optional: true
-            - name: SOFTCLIENT4ES_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: sc4es-license
-                  key: api-key
-                  optional: true
-          # TCP probes — the sidecar has NO gRPC health service (VERIFIED); a raw TCP
-          # connect to ARROW_PORT proves the Flight SQL server is listening.
-          livenessProbe:
-            tcpSocket:
-              port: flight-sql
-            initialDelaySeconds: 20
-            periodSeconds: 15
-            failureThreshold: 3
-          readinessProbe:
-            tcpSocket:
-              port: flight-sql
-            initialDelaySeconds: 5
-            periodSeconds: 10
-            failureThreshold: 3
-          resources:
-            limits:
-              cpu: 1000m
-              memory: 1536Mi
-            requests:
-              cpu: 500m
-              memory: 768Mi
-          volumeMounts:
-            - name: scratch
-              mountPath: /tmp
-      volumes:
-        # Writable /tmp: the sidecar runs the same-cluster JOIN engine on DuckDB
-        # (DuckDBJoinExecutor via LocalJoinHandler — VERIFIED), whose org.duckdb JDBC
-        # driver extracts its native libduckdb_java to java.io.tmpdir on first JOIN.
-        # readOnlyRootFilesystem=true without this would crash the first JOIN query.
-        - name: scratch
-          emptyDir:
-            sizeLimit: 1Gi
+  ingressClassName: nginx
+  tls:
+    - secretName: fed-tls
+      hosts:
+        - "fed.example.com"
+  rules:
+    - host: "fed.example.com"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: fed-softclient4es-federation
+                port:
+                  number: 32020
 ---
 # Source: softclient4es-federation/templates/tests/smoke-test.yaml
 apiVersion: v1
@@ -625,7 +419,7 @@ spec:
           # GetCatalogs: one catalog per registered sidecar alias.
           cats = [c["catalog_name"] for c in conn.adbc_get_objects(depth="catalogs").read_all().to_pylist()]
           cats = [c for c in cats if c]  # drop empty/system catalog if present
-          expected = 2
+          expected = 1
           print("catalogs:", cats)
           if len(cats) != expected:
               print(f"FAIL: expected {expected} catalogs, got {len(cats)}", file=sys.stderr)

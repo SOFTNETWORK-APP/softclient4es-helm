@@ -58,36 +58,38 @@ spec:
               value: {{ include "softclient4es-federation.esHost" (dict "es" $s.elasticsearch) | quote }}
             - name: ELASTIC_PORT
               value: {{ include "softclient4es-federation.esPort" (dict "es" $s.elasticsearch) | quote }}
-            {{- if $s.elasticsearch.credentialsSecretName }}
+            {{- /* Per-key secretKeyRef (Story 16.3): contract keys overridable via
+                   elasticsearch.secretKeys. Skipped when useEnvFrom (whole-Secret mode). */}}
+            {{- if and $s.elasticsearch.credentialsSecretName (not $s.elasticsearch.useEnvFrom) }}
             - name: ELASTIC_AUTH_METHOD
               valueFrom:
                 secretKeyRef:
                   name: {{ $s.elasticsearch.credentialsSecretName }}
-                  key: es-auth-method
+                  key: {{ include "softclient4es-federation.esSecretKey" (dict "es" $s.elasticsearch "field" "authMethod") }}
                   optional: true
             - name: ELASTIC_CREDENTIALS_USERNAME
               valueFrom:
                 secretKeyRef:
                   name: {{ $s.elasticsearch.credentialsSecretName }}
-                  key: es-username
+                  key: {{ include "softclient4es-federation.esSecretKey" (dict "es" $s.elasticsearch "field" "username") }}
                   optional: true
             - name: ELASTIC_CREDENTIALS_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ $s.elasticsearch.credentialsSecretName }}
-                  key: es-password
+                  key: {{ include "softclient4es-federation.esSecretKey" (dict "es" $s.elasticsearch "field" "password") }}
                   optional: true
             - name: ELASTIC_CREDENTIALS_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ $s.elasticsearch.credentialsSecretName }}
-                  key: es-api-key
+                  key: {{ include "softclient4es-federation.esSecretKey" (dict "es" $s.elasticsearch "field" "apiKey") }}
                   optional: true
             - name: ELASTIC_CREDENTIALS_BEARER_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ $s.elasticsearch.credentialsSecretName }}
-                  key: es-bearer-token
+                  key: {{ include "softclient4es-federation.esSecretKey" (dict "es" $s.elasticsearch "field" "bearerToken") }}
                   optional: true
             {{- end }}
             # ── Sidecar SERVER-SIDE auth (incoming) — single source of truth with the
@@ -95,30 +97,34 @@ spec:
             {{- with $s.auth }}
             - name: ARROW_AUTH_METHOD
               value: {{ .method | default "none" | quote }}
-            {{- if .credentialsSecretName }}
+            {{- /* Per-key secretKeyRef (Story 16.3): contract keys overridable via
+                   auth.secretKeys. Skipped when useEnvFrom (whole-Secret mode). NOTE: these
+                   render whenever credentialsSecretName is set, regardless of method — with
+                   method=none the sidecar ignores them (benign; documented in README). */}}
+            {{- if and .credentialsSecretName (not .useEnvFrom) }}
             - name: ARROW_AUTH_USERNAME
               valueFrom:
                 secretKeyRef:
                   name: {{ .credentialsSecretName }}
-                  key: arrow-username
+                  key: {{ include "softclient4es-federation.arrowSecretKey" (dict "auth" . "field" "username") }}
                   optional: true
             - name: ARROW_AUTH_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ .credentialsSecretName }}
-                  key: arrow-password
+                  key: {{ include "softclient4es-federation.arrowSecretKey" (dict "auth" . "field" "password") }}
                   optional: true
             - name: ARROW_AUTH_BEARER_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ .credentialsSecretName }}
-                  key: arrow-bearer-token
+                  key: {{ include "softclient4es-federation.arrowSecretKey" (dict "auth" . "field" "bearerToken") }}
                   optional: true
             - name: ARROW_AUTH_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ .credentialsSecretName }}
-                  key: arrow-api-key
+                  key: {{ include "softclient4es-federation.arrowSecretKey" (dict "auth" . "field" "apiKey") }}
                   optional: true
             {{- end }}
             {{- end }}
@@ -144,6 +150,22 @@ spec:
                   key: {{ $.Values.license.apiKeyKey | default "api-key" }}
                   optional: true
             {{- end }}
+          {{- /* Optional whole-Secret envFrom mode (Story 16.3): the Secret's data keys
+                 MUST already be the literal env-var names (ELASTIC_ and ARROW_AUTH_ prefixed)
+                 — there is no key remapping in this mode. */}}
+          {{- if or (and $s.elasticsearch.credentialsSecretName $s.elasticsearch.useEnvFrom) (and $s.auth $s.auth.credentialsSecretName $s.auth.useEnvFrom) }}
+          envFrom:
+            {{- if and $s.elasticsearch.credentialsSecretName $s.elasticsearch.useEnvFrom }}
+            - secretRef:
+                name: {{ $s.elasticsearch.credentialsSecretName }}
+                optional: true
+            {{- end }}
+            {{- if and $s.auth $s.auth.credentialsSecretName $s.auth.useEnvFrom }}
+            - secretRef:
+                name: {{ $s.auth.credentialsSecretName }}
+                optional: true
+            {{- end }}
+          {{- end }}
           # TCP probes — the sidecar has NO gRPC health service (VERIFIED); a raw TCP
           # connect to ARROW_PORT proves the Flight SQL server is listening.
           livenessProbe:
