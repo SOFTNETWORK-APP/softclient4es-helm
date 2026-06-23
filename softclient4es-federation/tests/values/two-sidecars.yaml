@@ -1,0 +1,17 @@
+# Golden-file input: federation + 2 sidecars on DIFFERENT ES versions (the epic's
+# mixed-version requirement). Used by `helm template -f` to regen
+# tests/golden/two-sidecars.yaml. Keep entries in a FIXED order for golden stability.
+license:
+  secretName: sc4es-license   # Pro/Enterprise — required for >=2 sidecars (Community maxClusters=1, FACT D)
+sidecars:
+  - name: prod-us
+    elasticsearchVersion: 8
+    elasticsearch:
+      url: "https://es-us.example.com:9200"
+      credentialsSecretName: es-us-creds
+    default: true
+  - name: prod-eu
+    elasticsearchVersion: 9
+    elasticsearch:
+      url: "https://es-eu.example.com:9200"
+      credentialsSecretName: es-eu-creds

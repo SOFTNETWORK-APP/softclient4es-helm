@@ -35,6 +35,23 @@ federation:
     # under /tmp, which is the writable scratch emptyDir, or a PersistentVolume).
     path: ":memory:"             # FEDERATION_DUCKDB_PATH
   upgradeUrl: "https://portal.softclient4es.com/pricing"   # FEDERATION_UPGRADE_URL
+  # Federation probe mode (Story 16.2). 16.1 used TCP-socket probes because a gRPC
+  # health Check returns NOT_SERVING while servers={}. Once sidecars exist the gRPC
+  # SERVING aggregate becomes meaningful, so 16.2 can flip the READINESS probe to a
+  # native gRPC probe.
+  probes:
+    # When true (default) AND at least one sidecar is configured, the federation
+    # READINESS probe is a native gRPC probe (grpc.health.v1.Health on 32021).
+    # ⚠️ The SERVING aggregate is ALL-OR-NOTHING (VERIFIED HealthService.scala:154-169:
+    #    `if (failures.isEmpty) SERVING else NOT_SERVING`): if ANY ONE downstream sidecar
+    #    is unreachable the federation Pod goes NotReady and is pulled from its Service —
+    #    so EVERY federation query fails, including ones targeting still-healthy sidecars
+    #    ("fail-closed" routing). Requires Kubernetes >= 1.27 (GA gRPC probes).
+    # Set false to keep the 16.1 TCP readiness (no K8s version floor; partial availability —
+    # the federation stays Ready and degrades per-query). On K8s 1.24-1.26 you MUST set
+    # false (use the grpc_health_probe exec fallback — see the operator guide). Liveness
+    # always stays TCP (a transient downstream blip must not kill the federation process).
+    useGrpc: true
 
 # Daily product-instance telemetry ping opt-out (Story 15.2/15.6). Top-level
 # softclient4es.telemetry.enabled → env SOFTCLIENT4ES_TELEMETRY_ENABLED.
@@ -104,3 +121,117 @@ securityContext:
 nodeSelector: {}
 tolerations: []
 affinity: {}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-Elasticsearch-version sidecars (Story 16.2).
+#
+# Each entry deploys ONE Arrow Flight SQL gateway Deployment + Service in front of
+# ONE Elasticsearch cluster, and registers that cluster in the federation's
+# `arrow.flight.federation.servers.<name>` map (rendered into a ConfigMap).
+#
+# LICENSING GUARDRAIL (VERIFIED — JoinLicenseGuard.guardStartup, Step 2 maxClusters):
+#   * Community (no license) permits EXACTLY ONE sidecar (maxClusters=1) — a
+#     1-sidecar deployment boots Ready with no license (the free single-cluster tier).
+#   * TWO OR MORE sidecars (len(sidecars) >= 2) require a Pro or Enterprise license
+#     — set `license.secretName` above. With NO/Community license and >=2 sidecars
+#     the federation Pod CrashLoops by design (sys.exit on the startup quota guard).
+#   * Pro allows up to 5 sidecars (maxClusters=5); Enterprise = unlimited.
+#   * NB: the Federation FEATURE is present in every tier (incl. Community); the gate
+#     is the per-tier maxClusters QUOTA, not a feature flag.
+#
+# Default: empty — the chart behaves exactly like 16.1 (federation only) when
+# `sidecars` is [].
+sidecars: []
+#   - name: prod-us                 # logical name: federation servers.<name> key AND k8s resource suffix
+#                                    #   (must be RFC1123: lowercase alphanumeric + '-', unique)
+#     elasticsearchVersion: 8        # 6 | 7 | 8 | 9  -> selects the sidecar image
+#     elasticsearch:
+#       # The backing ES cluster. `url` is DECOMPOSED into ELASTIC_SCHEME/HOST/PORT
+#       # (there is NO single ES-URL env var — VERIFIED). Either give `url`, or set
+#       # scheme/host/port explicitly (explicit fields win over url-derived ones).
+#       # `url` must be the canonical `scheme://host:port` form (no path/userinfo) —
+#       # a scheme-less url defaults to http, a port-less url to 9200; for a TLS or
+#       # non-9200 cluster supply the scheme/port or use explicit fields.
+#       url: "https://es-prod-us.example.com:9200"
+#       # scheme: https              # optional explicit override -> ELASTIC_SCHEME
+#       # host: es-prod-us...        # optional explicit override -> ELASTIC_HOST
+#       # port: 9200                 # optional explicit override -> ELASTIC_PORT
+#       # K8s Secret holding ES credentials. Keys (any subset): es-auth-method,
+#       # es-username, es-password, es-api-key, es-bearer-token. Mounted as
+#       # ELASTIC_AUTH_METHOD / ELASTIC_CREDENTIALS_* env. Chart does NOT create it.
+#       credentialsSecretName: ""
+#     replicaCount: 1                # default 1; HA = 3 (documented in README)
+#     resources: {}                  # optional per-sidecar override of sidecarDefaults.resources
+#     arrow:
+#       maxMemory: "256m"            # ARROW_JOIN_MAX_MEMORY (DuckDB JOIN engine memory)
+#       queryTimeoutSeconds: 120     # ARROW_QUERY_TIMEOUT_SECONDS
+#       batchSize: 1000              # ARROW_BATCH_SIZE
+#     # Server-side auth the sidecar enforces on incoming clients (the federation is
+#     # one such client). SINGLE SOURCE OF TRUTH: the chart renders BOTH the sidecar's
+#     # ARROW_AUTH_* env AND the federation's servers.<name>.credentials from this block.
+#     auth:
+#       method: none                 # none | basic | bearer | apikey
+#       credentialsSecretName: ""    # Secret keys: arrow-username/arrow-password (basic),
+#                                    #   arrow-bearer-token (bearer), arrow-api-key (apikey).
+#                                    #   Mounted into the sidecar as ARROW_AUTH_* env.
+#       # Inline creds for the FEDERATION->sidecar (outgoing) hop ONLY (rendered into the
+#       # ConfigMap; a ConfigMap cannot reference a Secret, so a non-none method REQUIRES
+#       # these inline in 16.2 — Secret-backed federation-side auth is Story 16.3):
+#       # username: ""               # basic
+#       # password: ""               # basic
+#       # bearerToken: ""            # bearer
+#       # apiKey: ""                 # apikey
+#     default: false                 # at most ONE sidecar may be default=true (bare-table routing)
+#     alias: ""                      # optional federation schema alias (defaults to `name`)
+#     image:                         # optional override of the version-derived image
+#       repository: ""               # e.g. a custom-built sidecar
+#       tag: ""                      # defaults to .Chart.AppVersion
+
+# Shared defaults applied to every sidecar (each `sidecars[]` entry may override
+# resources via its own `resources:` key).
+sidecarDefaults:
+  image:
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      memory: 768Mi
+      cpu: 500m
+    limits:
+      memory: 1536Mi
+      cpu: 1000m
+  # Writable /tmp for the DuckDB JNI native-lib extraction (same-cluster JOIN engine).
+  scratch:
+    sizeLimit: 1Gi
+  # TCP-socket probes on ARROW_PORT (the sidecar has NO gRPC health service — VERIFIED).
+  probes:
+    liveness:
+      initialDelaySeconds: 20
+      periodSeconds: 15
+      failureThreshold: 3
+    readiness:
+      initialDelaySeconds: 5
+      periodSeconds: 10
+      failureThreshold: 3
+  # Sidecars share the same hardening as the federation (overridable).
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1001
+    runAsGroup: 1001
+    fsGroup: 1001
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 1001
+    capabilities:
+      drop:
+        - ALL
+
+# `helm test` smoke Job (Story 16.2). Connects to the federation Flight SQL endpoint
+# and asserts GetCatalogs (one catalog per registered sidecar) == len(sidecars).
+# The default image pip-installs ADBC at runtime (needs PyPI reachability) — pin an
+# internal/pre-baked image for air-gapped or rate-limited clusters.
+test:
+  image: ""                       # default "python:3.12-slim" when empty

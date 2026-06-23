@@ -1,0 +1,186 @@
+{{- range $i, $s := .Values.sidecars }}
+{{- $sd := $.Values.sidecarDefaults }}
+{{- $res := $s.resources | default $sd.resources }}
+{{- /* A sidecar MUST point at a backing ES cluster — fail with an actionable message rather than a confusing nil-pointer when the `elasticsearch` block is omitted. */ -}}
+{{- $es := required (printf "sidecar %q: an `elasticsearch` block is required (set elasticsearch.url, or explicit elasticsearch.host/scheme/port)" $s.name) $s.elasticsearch }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "softclient4es-federation.sidecarFullname" (dict "ctx" $ "sidecar" $s) }}
+  labels:
+    {{- include "softclient4es-federation.sidecarLabels" (dict "ctx" $ "sidecar" $s) | nindent 4 }}
+spec:
+  replicas: {{ $s.replicaCount | default 1 }}
+  selector:
+    matchLabels:
+      {{- include "softclient4es-federation.sidecarSelectorLabels" (dict "ctx" $ "sidecar" $s) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "softclient4es-federation.sidecarSelectorLabels" (dict "ctx" $ "sidecar" $s) | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "softclient4es-federation.serviceAccountName" $ }}
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml $sd.podSecurityContext | nindent 8 }}
+      containers:
+        - name: sidecar
+          image: "{{ include "softclient4es-federation.sidecarImage" (dict "ctx" $ "sidecar" $s) }}"
+          imagePullPolicy: {{ $sd.image.pullPolicy }}
+          securityContext:
+            {{- toYaml $sd.securityContext | nindent 12 }}
+          ports:
+            - name: flight-sql
+              containerPort: 32010
+              protocol: TCP
+          env:
+            # ── Arrow Flight SQL server (arrow.flight.*) ──
+            - name: ARROW_HOST
+              value: "0.0.0.0"
+            - name: ARROW_PORT
+              value: "32010"
+            - name: ARROW_BATCH_SIZE
+              value: {{ ($s.arrow).batchSize | default 1000 | quote }}
+            - name: ARROW_QUERY_TIMEOUT_SECONDS
+              value: {{ ($s.arrow).queryTimeoutSeconds | default 120 | quote }}
+            - name: ARROW_JOIN_MAX_MEMORY
+              value: {{ ($s.arrow).maxMemory | default "256m" | quote }}
+            - name: ARROW_JOIN_UPGRADE_URL
+              value: {{ $.Values.federation.upgradeUrl | quote }}
+            # ── Elasticsearch connection (elastic.credentials.* — VERIFIED, NOT a single URL) ──
+            - name: ELASTIC_SCHEME
+              value: {{ include "softclient4es-federation.esScheme" (dict "es" $s.elasticsearch) | quote }}
+            - name: ELASTIC_HOST
+              value: {{ include "softclient4es-federation.esHost" (dict "es" $s.elasticsearch) | quote }}
+            - name: ELASTIC_PORT
+              value: {{ include "softclient4es-federation.esPort" (dict "es" $s.elasticsearch) | quote }}
+            {{- if $s.elasticsearch.credentialsSecretName }}
+            - name: ELASTIC_AUTH_METHOD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $s.elasticsearch.credentialsSecretName }}
+                  key: es-auth-method
+                  optional: true
+            - name: ELASTIC_CREDENTIALS_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $s.elasticsearch.credentialsSecretName }}
+                  key: es-username
+                  optional: true
+            - name: ELASTIC_CREDENTIALS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $s.elasticsearch.credentialsSecretName }}
+                  key: es-password
+                  optional: true
+            - name: ELASTIC_CREDENTIALS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $s.elasticsearch.credentialsSecretName }}
+                  key: es-api-key
+                  optional: true
+            - name: ELASTIC_CREDENTIALS_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $s.elasticsearch.credentialsSecretName }}
+                  key: es-bearer-token
+                  optional: true
+            {{- end }}
+            # ── Sidecar SERVER-SIDE auth (incoming) — single source of truth with the
+            #    federation's outgoing servers.<name>.credentials (rendered in the ConfigMap) ──
+            {{- with $s.auth }}
+            - name: ARROW_AUTH_METHOD
+              value: {{ .method | default "none" | quote }}
+            {{- if .credentialsSecretName }}
+            - name: ARROW_AUTH_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .credentialsSecretName }}
+                  key: arrow-username
+                  optional: true
+            - name: ARROW_AUTH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .credentialsSecretName }}
+                  key: arrow-password
+                  optional: true
+            - name: ARROW_AUTH_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .credentialsSecretName }}
+                  key: arrow-bearer-token
+                  optional: true
+            - name: ARROW_AUTH_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .credentialsSecretName }}
+                  key: arrow-api-key
+                  optional: true
+            {{- end }}
+            {{- end }}
+            # ── Telemetry opt-out (shared with federation) ──
+            # VERIFIED: SOFTCLIENT4ES_TELEMETRY_ENABLED is honored by the sidecar too — the env
+            # override lives in elasticsql licensing reference.conf:30 (softclient4es.telemetry.enabled),
+            # read by TelemetryConfig.load, on which the arrow sidecar depends transitively. NOTE it is
+            # NOT in arrowServerSettings.dockerEnvVars (build.sbt:243-255 bakes only ELASTIC_*/ARROW_*),
+            # so the chart MUST set it explicitly here for the opt-out to reach the sidecar.
+            - name: SOFTCLIENT4ES_TELEMETRY_ENABLED
+              value: {{ $.Values.telemetry.enabled | quote }}
+            {{- if $.Values.license.secretName }}
+            - name: SOFTCLIENT4ES_LICENSE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.license.secretName }}
+                  key: {{ $.Values.license.licenseKeyKey | default "license-key" }}
+                  optional: true
+            - name: SOFTCLIENT4ES_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.license.secretName }}
+                  key: {{ $.Values.license.apiKeyKey | default "api-key" }}
+                  optional: true
+            {{- end }}
+          # TCP probes — the sidecar has NO gRPC health service (VERIFIED); a raw TCP
+          # connect to ARROW_PORT proves the Flight SQL server is listening.
+          livenessProbe:
+            tcpSocket:
+              port: flight-sql
+            initialDelaySeconds: {{ $sd.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ $sd.probes.liveness.periodSeconds }}
+            failureThreshold: {{ $sd.probes.liveness.failureThreshold }}
+          readinessProbe:
+            tcpSocket:
+              port: flight-sql
+            initialDelaySeconds: {{ $sd.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ $sd.probes.readiness.periodSeconds }}
+            failureThreshold: {{ $sd.probes.readiness.failureThreshold }}
+          resources:
+            {{- toYaml $res | nindent 12 }}
+          volumeMounts:
+            - name: scratch
+              mountPath: /tmp
+      volumes:
+        # Writable /tmp: the sidecar runs the same-cluster JOIN engine on DuckDB
+        # (DuckDBJoinExecutor via LocalJoinHandler — VERIFIED), whose org.duckdb JDBC
+        # driver extracts its native libduckdb_java to java.io.tmpdir on first JOIN.
+        # readOnlyRootFilesystem=true without this would crash the first JOIN query.
+        - name: scratch
+          emptyDir:
+            sizeLimit: {{ $sd.scratch.sizeLimit }}
+      {{- with $.Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

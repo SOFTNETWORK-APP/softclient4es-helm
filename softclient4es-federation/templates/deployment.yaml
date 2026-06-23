@@ -13,6 +13,12 @@ spec:
     metadata:
       labels:
         {{- include "softclient4es-federation.selectorLabels" . | nindent 8 }}
+      {{- if gt (len .Values.sidecars) 0 }}
+      annotations:
+        # Roll the federation Pod whenever the rendered servers ConfigMap changes
+        # (add/remove/edit a sidecar) so `helm upgrade` actually takes effect.
+        checksum/config: {{ include (print $.Template.BasePath "/federation-configmap.yaml") . | sha256sum }}
+      {{- end }}
     spec:
       serviceAccountName: {{ include "softclient4es-federation.serviceAccountName" . }}
       {{- with .Values.imagePullSecrets }}
@@ -67,6 +73,14 @@ spec:
                   key: {{ .Values.license.apiKeyKey | default "api-key" }}
                   optional: true
             {{- end }}
+            {{- if gt (len .Values.sidecars) 0 }}
+            # Point Typesafe Config at the mounted ConfigMap so ConfigFactory.load()
+            # picks up the `servers` map (which has NO env override). The native-packager
+            # bash launcher reads $JAVA_OPTS at runtime (VERIFIED) and prepends it to the
+            # JVM args; reference.conf still loads, so the FEDERATION_* env defaults stay.
+            - name: JAVA_OPTS
+              value: "-Dconfig.file=/opt/docker/conf/application.conf"
+            {{- end }}
           # --- Probes (FACT A / A1): TCP-socket only for the skeleton. ---
           # The federation health endpoint is gRPC grpc.health.v1.Health and returns
           # NOT_SERVING while servers={} (HealthService.scala:105-111), so a gRPC Check
@@ -80,6 +94,19 @@ spec:
             periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
             timeoutSeconds: {{ .Values.federation.health.probeTimeoutSeconds }}
             failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          # Readiness flips to a native gRPC probe once sidecars make the SERVING
+          # aggregate meaningful (Story 16.2). ⚠️ ALL-OR-NOTHING: any one unreachable
+          # downstream → NotReady → ALL queries fail (fail-closed). Set
+          # federation.probes.useGrpc=false to keep TCP readiness (partial availability;
+          # required on K8s < 1.27 — native gRPC probes are GA only from 1.27).
+          {{- if and (gt (len .Values.sidecars) 0) .Values.federation.probes.useGrpc }}
+          readinessProbe:
+            grpc:
+              port: {{ .Values.federation.health.port }}
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          {{- else }}
           readinessProbe:
             tcpSocket:
               port: flight-sql
@@ -87,11 +114,17 @@ spec:
             periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
             timeoutSeconds: {{ .Values.federation.health.probeTimeoutSeconds }}
             failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
             - name: scratch
               mountPath: /tmp
+            {{- if gt (len .Values.sidecars) 0 }}
+            - name: federation-config
+              mountPath: /opt/docker/conf
+              readOnly: true
+            {{- end }}
       volumes:
         # readOnlyRootFilesystem=true requires a writable scratch dir: the org.duckdb
         # JDBC driver extracts its native libduckdb_java library to java.io.tmpdir (/tmp)
@@ -102,6 +135,11 @@ spec:
         - name: scratch
           emptyDir:
             sizeLimit: {{ .Values.scratch.sizeLimit }}
+        {{- if gt (len .Values.sidecars) 0 }}
+        - name: federation-config
+          configMap:
+            name: {{ include "softclient4es-federation.fullname" . }}-config
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

@@ -5,7 +5,7 @@ kind: ServiceAccount
 metadata:
   name: fed-softclient4es-federation
   labels:
-    helm.sh/chart: softclient4es-federation-0.1.0
+    helm.sh/chart: softclient4es-federation-0.2.0
     app.kubernetes.io/name: softclient4es-federation
     app.kubernetes.io/instance: fed
     app.kubernetes.io/version: "0.2.0"
@@ -20,7 +20,7 @@ kind: Service
 metadata:
   name: fed-softclient4es-federation
   labels:
-    helm.sh/chart: softclient4es-federation-0.1.0
+    helm.sh/chart: softclient4es-federation-0.2.0
     app.kubernetes.io/name: softclient4es-federation
     app.kubernetes.io/instance: fed
     app.kubernetes.io/version: "0.2.0"
@@ -44,7 +44,7 @@ kind: Deployment
 metadata:
   name: fed-softclient4es-federation
   labels:
-    helm.sh/chart: softclient4es-federation-0.1.0
+    helm.sh/chart: softclient4es-federation-0.2.0
     app.kubernetes.io/name: softclient4es-federation
     app.kubernetes.io/instance: fed
     app.kubernetes.io/version: "0.2.0"
@@ -122,6 +122,11 @@ spec:
             periodSeconds: 15
             timeoutSeconds: 5
             failureThreshold: 3
+          # Readiness flips to a native gRPC probe once sidecars make the SERVING
+          # aggregate meaningful (Story 16.2). ⚠️ ALL-OR-NOTHING: any one unreachable
+          # downstream → NotReady → ALL queries fail (fail-closed). Set
+          # federation.probes.useGrpc=false to keep TCP readiness (partial availability;
+          # required on K8s < 1.27 — native gRPC probes are GA only from 1.27).
           readinessProbe:
             tcpSocket:
               port: flight-sql

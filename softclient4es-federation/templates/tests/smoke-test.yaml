@@ -1,0 +1,35 @@
+{{- if gt (len .Values.sidecars) 0 }}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "softclient4es-federation.fullname" . }}-test-catalogs
+  labels:
+    {{- include "softclient4es-federation.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  containers:
+    - name: show-catalogs
+      image: {{ .Values.test.image | default "python:3.12-slim" | quote }}
+      command: ["sh", "-c"]
+      args:
+        - |
+          pip install --quiet adbc_driver_flightsql==1.6.0 adbc_driver_manager==1.6.0
+          python - <<'PY'
+          import sys
+          import adbc_driver_flightsql.dbapi as dbapi
+          host = "{{ include "softclient4es-federation.fullname" . }}"
+          conn = dbapi.connect(f"grpc://{host}:{{ .Values.service.port }}")
+          # GetCatalogs: one catalog per registered sidecar alias.
+          cats = [c["catalog_name"] for c in conn.adbc_get_objects(depth="catalogs").read_all().to_pylist()]
+          cats = [c for c in cats if c]  # drop empty/system catalog if present
+          expected = {{ len .Values.sidecars }}
+          print("catalogs:", cats)
+          if len(cats) != expected:
+              print(f"FAIL: expected {expected} catalogs, got {len(cats)}", file=sys.stderr)
+              sys.exit(1)
+          print("OK")
+          PY
+{{- end }}
