@@ -267,8 +267,8 @@ The committed render baselines under `tests/golden/` let a future PR detect temp
 drift: `default.yaml` (0 sidecars), `two-sidecars.yaml` (federation + 2 mixed ES8/ES9
 sidecars), `secret-auth.yaml` (1 sidecar, Secret-backed ES + sidecar bearer auth +
 federation `CONFIG_FORCE_*`), and `ingress-tls.yaml` (federation behind a cert-manager
-TLS Ingress). Regenerate (and
-review the diff) with:
+TLS Ingress). The `example-*.yaml` baselines render the three topology examples under
+`examples/` (Story 16.4). Regenerate (and review the diff) with:
 
 ```sh
 helm template fed ./softclient4es-federation > ./softclient4es-federation/tests/golden/default.yaml
@@ -278,6 +278,13 @@ helm template fed ./softclient4es-federation -f ./softclient4es-federation/tests
   > ./softclient4es-federation/tests/golden/secret-auth.yaml
 helm template fed ./softclient4es-federation -f ./softclient4es-federation/tests/values/ingress-tls.yaml \
   > ./softclient4es-federation/tests/golden/ingress-tls.yaml
+# Topology examples (Story 16.4):
+helm template fed ./softclient4es-federation -f ./softclient4es-federation/examples/single-cluster/values.yaml \
+  > ./softclient4es-federation/tests/golden/example-single-cluster.yaml
+helm template fed ./softclient4es-federation -f ./softclient4es-federation/examples/three-region/values.yaml \
+  > ./softclient4es-federation/tests/golden/example-three-region.yaml
+helm template fed ./softclient4es-federation -f ./softclient4es-federation/examples/heterogeneous-ready/values.yaml \
+  > ./softclient4es-federation/tests/golden/example-heterogeneous-ready.yaml
 git diff --stat ./softclient4es-federation/tests/golden/
 ```
 
@@ -285,3 +292,28 @@ Any diff must be intentional. CI (Story 16.5) enforces these goldens plus `helm 
 and `kubeconform -strict` (including the 2-sidecar, Secret-backed, and TLS/Ingress renders).
 The chart `templates/` must emit ZERO `kind: Secret` — assert with
 `helm template fed ./softclient4es-federation -f … | grep -c '^kind: Secret'` (expected `0`).
+
+> **`example-three-region.yaml` and `example-heterogeneous-ready.yaml` are BYTE-IDENTICAL
+> by design** — `diff` between them is EMPTY (Story 16.4 Decision A2). The two `values.yaml`
+> overlays carry the SAME active values (same license Secret, telemetry, `useGrpc`, and the
+> same three `sidecars[]`); they differ ONLY in comments and the commented-out R2b
+> `duckdb-attach` preview, and Helm strips all comments before rendering. The ONLY signal
+> distinguishing the two examples is the SOURCE: `examples/heterogeneous-ready/values.yaml`
+> contains the `type = "duckdb-attach"` R2b marker and `examples/three-region/values.yaml`
+> does not (Decision A2b) — CI (16.5) greps for this. A regression that overwrote one
+> overlay with the other would pass the golden + `helm test` gates but FAIL the grep.
+
+## Topology examples
+
+Copy-pasteable `values.yaml` overlays for three operator scenarios live under `examples/`
+(Story 16.4). Each has its own `README.md` with a "when to use", an ASCII topology diagram,
+the install command, and the `SHOW CATALOGS` smoke expectation:
+
+| Example | Topology | License | `SHOW CATALOGS` |
+|---|---|---|---|
+| `examples/single-cluster/` | federation + 1 ES8 sidecar | **none** (Community, `maxClusters=1`) | 1 |
+| `examples/three-region/` | federation + us-east-1 (ES8) / eu-west-1 (ES8) / ap-south-1 (ES9) | **Pro / Enterprise** | 3 |
+| `examples/heterogeneous-ready/` | three-region today + a commented R2b `duckdb-attach` preview (PG/MySQL/Snowflake) | **Pro / Enterprise** | 3 (R2b inactive) |
+
+Install any of them with `helm install softclient4es-federation softclient4es-federation -f examples/<x>/values.yaml`
+(create the referenced Secrets first — see each example's README).
