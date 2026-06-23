@@ -12,24 +12,44 @@ spec:
   restartPolicy: Never
   containers:
     - name: show-catalogs
+      # Default: a public python image; CI + air-gapped clusters MUST pin `test.image`
+      # to a PRE-BAKED image with adbc_driver_flightsql installed (no runtime pip).
       image: {{ .Values.test.image | default "python:3.12-slim" | quote }}
       command: ["sh", "-c"]
       args:
         - |
-          pip install --quiet adbc_driver_flightsql==1.6.0 adbc_driver_manager==1.6.0
+          set -e
+          # If the image is NOT pre-baked, install ADBC at runtime (needs PyPI reachability).
+          python -c "import adbc_driver_flightsql" 2>/dev/null || \
+            pip install --quiet adbc_driver_flightsql=={{ .Values.test.adbcVersion | default "1.6.0" }} \
+                                adbc_driver_manager=={{ .Values.test.adbcVersion | default "1.6.0" }}
           python - <<'PY'
-          import sys
+          import sys, time
           import adbc_driver_flightsql.dbapi as dbapi
           host = "{{ include "softclient4es-federation.fullname" . }}"
-          conn = dbapi.connect(f"grpc://{host}:{{ .Values.service.port }}")
-          # GetCatalogs: one catalog per registered sidecar alias.
-          cats = [c["catalog_name"] for c in conn.adbc_get_objects(depth="catalogs").read_all().to_pylist()]
-          cats = [c for c in cats if c]  # drop empty/system catalog if present
+          uri  = f"grpc://{host}:{{ .Values.service.port }}"
           expected = {{ len .Values.sidecars }}
-          print("catalogs:", cats)
-          if len(cats) != expected:
-              print(f"FAIL: expected {expected} catalogs, got {len(cats)}", file=sys.stderr)
-              sys.exit(1)
-          print("OK")
+          # The federation only reports its catalogs once it has DISCOVERED every downstream
+          # (gRPC readiness is all-or-nothing). Retry the connect + GetCatalogs for up to ~60s.
+          deadline = time.time() + 60
+          last_err = None
+          while time.time() < deadline:
+              try:
+                  conn = dbapi.connect(uri)
+                  # GetCatalogs: one catalog_name row per registered sidecar alias (VERIFIED
+                  # FederationFlightProducer.getStreamCatalogs — needs NO default downstream).
+                  cats = [c["catalog_name"]
+                          for c in conn.adbc_get_objects(depth="catalogs").read_all().to_pylist()]
+                  cats = [c for c in cats if c]   # drop empty/system catalog if present
+                  conn.close()
+                  if len(cats) == expected:
+                      print(f"OK: {len(cats)} catalogs: {cats}")
+                      sys.exit(0)
+                  last_err = f"expected {expected} catalogs, got {len(cats)}: {cats}"
+              except Exception as e:   # connect refused while federation still NotReady
+                  last_err = f"connect/get_objects error: {e}"
+              time.sleep(3)
+          print(f"FAIL: {last_err}", file=sys.stderr)
+          sys.exit(1)
           PY
 {{- end }}

@@ -78,6 +78,19 @@ spec:
                   key: {{ .Values.license.apiKeyKey | default "api-key" }}
                   optional: true
             {{- end }}
+            {{- /* Story 16.5 (FACT F #2): offline license public-key for air-gapped /
+                   test-signed JWT verification (LicenseKeyVerifier.loadPublicKey Step 3).
+                   Gated INDEPENDENTLY of license.secretName so the multi-sidecar CI can
+                   point it at the same Secret. Renders nothing at the "" default, so the
+                   golden and every example are byte-stable. */}}
+            {{- if .Values.license.publicKeySecretName }}
+            - name: SOFTCLIENT4ES_LICENSE_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.license.publicKeySecretName }}
+                  key: {{ .Values.license.publicKeyKey | default "license-public-key" }}
+                  optional: true
+            {{- end }}
             {{- if gt (len .Values.sidecars) 0 }}
             # Point Typesafe Config at the mounted ConfigMap so ConfigFactory.load()
             # picks up the `servers` map (which has NO env override). The native-packager

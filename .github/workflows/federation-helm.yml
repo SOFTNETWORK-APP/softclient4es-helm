@@ -1,0 +1,519 @@
+# Comprehensive CI for the softclient4es-federation Helm chart (Epic 16, Story 16.5).
+# Validates: lint + template + kubeconform + golden-diff (static, hard blocker) AND
+# per-topology / per-ES-version / secret-backend / upgrade / uninstall installs on
+# ephemeral kind clusters.
+#
+# This is the dedicated CHART repo (softclient4es-helm) — it is chart-only and CANNOT
+# build images via sbt. CI therefore NEVER builds: the live-install jobs `docker pull`
+# the PUBLIC DockerHub federation + sidecar images and `kind load` them. checkout@v4,
+# `sudo sysctl -w vm.max_map_count=262144` before any Elasticsearch boots.
+#
+# IMAGE TAGS: the chart's image refs default to the Chart.yaml appVersion. The live jobs
+# pull the public DockerHub tags (federation image.tag:"" -> appVersion; sidecar tag ->
+# appVersion) and `kind load` them — no per-image --set override, so the federation +
+# sidecar tags stay consistent. The committed goldens are appVersion renders, so the
+# golden gate renders with NO --set image.tag.
+#
+# IMAGE AVAILABILITY (OQ-1): neither the federation image nor the sidecar tags are
+# published on DockerHub yet. The `image-availability` job probes each with
+# `docker manifest inspect`; if ANY required image is absent every live-install job is
+# SKIPPED WITH A `::warning::` ANNOTATION (not failed). All static-validation gates run
+# UNCONDITIONALLY on every PR with zero external deps.
+#
+# LICENSE: the multi-sidecar (Pro) tiers are BEST-EFFORT, gated on TWO repo secrets
+# together (skip-not-fail if either missing), on top of image availability: (1) secret
+# SC4ES_PRO_TEST_JWT, (2) secret SC4ES_TEST_PUBLIC_KEY (injected as
+# SOFTCLIENT4ES_LICENSE_PUBLIC_KEY so the verifier resolves the test kid OFFLINE). The
+# published federation image must itself be Pro-capable (JWT-verifying SPI on classpath,
+# Story 16.1 OQ-5) for the Pro JWT to verify — an OSS-only image falls back to Community.
+# single-cluster + per-ES-version + secret backends + uninstall + ALL static gates are
+# license-free and run unconditionally (when the images are published).
+name: Federation Helm Chart
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'softclient4es-federation/**'
+      - '.github/workflows/federation-helm.yml'
+      - '.github/scripts/deploy-es.sh'
+      - '.github/scripts/install-sealed-secrets.sh'
+  push:
+    branches: ['!main']
+    paths:
+      - 'softclient4es-federation/**'
+      - '.github/workflows/federation-helm.yml'
+      - '.github/scripts/deploy-es.sh'
+      - '.github/scripts/install-sealed-secrets.sh'
+  # Heavy matrix (per-ES-version + secret backends) can be moved here if PR duration > 30 min
+  # (see the sharding fallback in the chart README). PRs would then run a reduced matrix.
+  # schedule:
+  #   - cron: '0 3 * * *'
+
+permissions:
+  contents: read
+
+env:
+  CHART_DIR: softclient4es-federation
+  HELM_VERSION: v3.16.3
+  KUBECONFORM_VERSION: v0.6.7
+  KIND_VERSION: v0.24.0              # kind node images current to K8s 1.31
+  KIND_NODE_IMAGE: kindest/node:v1.31.0
+  # The chart's image refs default to the Chart.yaml appVersion. The live jobs pull the
+  # public DockerHub tags at this version so the chart DEFAULTS resolve the kind-loaded images.
+  IMAGE_TAG: '0.2.0'
+  FED_IMAGE: softnetwork/softclient4es-federation
+  SIDECAR_IMAGE_PREFIX: softnetwork/softclient4es   # softclient4es<N>-arrow-flight-sql
+  # A pre-baked ADBC client image avoids the smoke Job's runtime pip install (air-gap). When
+  # empty the chart smoke Pod falls back to python:3.12-slim + runtime pip (PyPI reachable on
+  # GitHub-hosted runners). PROPOSED image — see OQ-2 / chart README.
+  TEST_ADBC_IMAGE: ''
+
+jobs:
+  # ── 1. STATIC CHECKS — no cluster, unconditional, hard blocker ─────────────
+  static-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - name: Install kubeconform
+        run: |
+          curl -sSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin kubeconform
+      - name: helm lint (chart + all examples)
+        run: |
+          helm lint "${CHART_DIR}"
+          for ex in single-cluster three-region heterogeneous-ready; do
+            f="${CHART_DIR}/examples/${ex}/values.yaml"
+            if [ -f "$f" ]; then
+              helm lint "${CHART_DIR}" -f "$f"
+            else
+              echo "::warning::missing example $f (Story 16.4 not merged yet — skipping lint -f)"
+            fi
+          done
+      - name: helm template + kubeconform (base + each example)
+        run: |
+          render() { helm template fed "${CHART_DIR}" "$@"; }
+          # base (0-sidecar) always renders
+          render | kubeconform -strict -summary -kubernetes-version 1.29.0 -ignore-missing-schemas
+          for ex in single-cluster three-region heterogeneous-ready; do
+            f="${CHART_DIR}/examples/${ex}/values.yaml"
+            if [ -f "$f" ]; then
+              render -f "$f" | kubeconform -strict -summary -kubernetes-version 1.29.0 -ignore-missing-schemas
+            else
+              echo "::warning::missing example $f — skipping kubeconform for $ex"
+            fi
+          done
+      - name: golden-file diff (template drift gate)
+        run: |
+          fail=0
+          # default (16.1) + two-sidecars (16.2) + secret-auth/ingress-tls (16.3) goldens.
+          # All committed goldens are appVersion renders — render WITH NO --set image.tag.
+          helm template fed "${CHART_DIR}" \
+            | diff -u "${CHART_DIR}/tests/golden/default.yaml" - || { echo "::error::default.yaml golden drift"; fail=1; }
+          helm template fed "${CHART_DIR}" -f "${CHART_DIR}/tests/values/two-sidecars.yaml" \
+            | diff -u "${CHART_DIR}/tests/golden/two-sidecars.yaml" - || { echo "::error::two-sidecars.yaml golden drift"; fail=1; }
+          helm template fed "${CHART_DIR}" -f "${CHART_DIR}/tests/values/secret-auth.yaml" \
+            | diff -u "${CHART_DIR}/tests/golden/secret-auth.yaml" - || { echo "::error::secret-auth.yaml golden drift"; fail=1; }
+          helm template fed "${CHART_DIR}" -f "${CHART_DIR}/tests/values/ingress-tls.yaml" \
+            | diff -u "${CHART_DIR}/tests/golden/ingress-tls.yaml" - || { echo "::error::ingress-tls.yaml golden drift"; fail=1; }
+          # Per-example goldens (Story 16.4 committed them at tests/golden/example-<name>.yaml).
+          for ex in single-cluster three-region heterogeneous-ready; do
+            f="${CHART_DIR}/examples/${ex}/values.yaml"
+            g="${CHART_DIR}/tests/golden/example-${ex}.yaml"
+            if [ -f "$f" ] && [ -f "$g" ]; then
+              helm template fed "${CHART_DIR}" -f "$f" \
+                | diff -u "$g" - || { echo "::error::example-${ex}.yaml golden drift"; fail=1; }
+            else
+              echo "::warning::missing example or golden for $ex (16.4 not merged) — skipping golden diff"
+            fi
+          done
+          exit $fail
+      - name: assert chart renders ZERO kind:Secret (16.3 contract)
+        run: |
+          n=$(helm template fed "${CHART_DIR}" | grep -c '^kind: Secret' || true)
+          [ "$n" = "0" ] || { echo "::error::chart must NOT render a kind:Secret (got $n)"; exit 1; }
+      - name: heterogeneous-ready discriminator (16.4 A2b — only signal vs three-region)
+        run: |
+          # three-region and heterogeneous-ready goldens are BYTE-IDENTICAL by design (Helm
+          # strips the R2b duckdb-attach comment block). The ONLY signal distinguishing them is
+          # the commented duckdb-attach preview in the SOURCE values.yaml. Guard against a
+          # regression that copies one example over the other (passes golden + smoke undetected).
+          het="${CHART_DIR}/examples/heterogeneous-ready/values.yaml"
+          tr="${CHART_DIR}/examples/three-region/values.yaml"
+          if [ -f "$het" ] && [ -f "$tr" ]; then
+            nh=$(grep -c 'type = "duckdb-attach"' "$het" || true)
+            nt=$(grep -c 'type = "duckdb-attach"' "$tr" || true)
+            [ "$nh" = "3" ] || { echo "::error::heterogeneous-ready must keep 3 commented duckdb-attach previews (got $nh)"; exit 1; }
+            [ "$nt" = "0" ] || { echo "::error::three-region must have 0 duckdb-attach entries (got $nt)"; exit 1; }
+          else
+            echo "::warning::examples missing (16.4 not merged) — skipping A2b discriminator"
+          fi
+
+  # ── 2. IMAGE AVAILABILITY — probe the PUBLIC DockerHub images, prerequisite for installs ─
+  # This chart repo cannot build images (no sbt). The federation image + the four sidecar tags
+  # are pulled from public DockerHub. They are NOT yet published (OQ-1), so probe each tag with
+  # `docker manifest inspect`; if ANY is absent, the live-install jobs SKIP WITH A WARNING.
+  image-availability:
+    runs-on: ubuntu-latest
+    outputs:
+      images_published: ${{ steps.probe.outputs.images_published }}   # gate for ALL live-install jobs
+    steps:
+      - name: Probe public DockerHub images (federation + 4 sidecars)
+        id: probe
+        run: |
+          published=true
+          probe() {
+            if docker manifest inspect "$1" >/dev/null 2>&1; then
+              echo "found: $1"
+            else
+              echo "::warning::image not published on DockerHub: $1 — live-install jobs will be SKIPPED (OQ-1)"
+              published=false
+            fi
+          }
+          probe "docker.io/${FED_IMAGE}:${IMAGE_TAG}"
+          for v in 6 7 8 9; do
+            probe "docker.io/${SIDECAR_IMAGE_PREFIX}${v}-arrow-flight-sql:${IMAGE_TAG}"
+          done
+          if [ "$published" != "true" ]; then
+            echo "::warning::one or more federation/sidecar images are not yet published (OQ-1) — skipping all live kind-install jobs; static gates still ran"
+          fi
+          echo "images_published=$published" >> "$GITHUB_OUTPUT"
+
+  # ── 3. PER-TOPOLOGY INSTALL — single-cluster (license-free) + 3-cluster (Pro) ─
+  install-topology:
+    runs-on: ubuntu-latest
+    needs: [static-checks, image-availability]
+    if: ${{ needs.image-availability.outputs.images_published == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - example: single-cluster
+            es: '8'                   # one ES8, hostname `es`
+            expect_catalogs: 1
+            license: false            # 1 sidecar -> Community, no license (FACT C)
+          - example: three-region
+            es: '8,8,9'               # two ES8 + one ES9 (mixed-version)
+            expect_catalogs: 3
+            license: true             # 3 sidecars -> Pro JWT required (FACT C/F)
+          - example: heterogeneous-ready
+            es: '8,8,9'               # 3 ES (R2b placeholders inactive in R1)
+            expect_catalogs: 3
+            license: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set vm.max_map_count (Elasticsearch requirement)
+        run: sudo sysctl -w vm.max_map_count=262144
+      - name: Skip if example missing (Story 16.4 not merged)
+        id: guard
+        run: |
+          f="${CHART_DIR}/examples/${{ matrix.example }}/values.yaml"
+          if [ ! -f "$f" ]; then
+            echo "::warning::$f missing — Story 16.4 not merged; skipping install"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Skip multi-sidecar install when no Pro test license (FACT C + FACT F, best-effort tier)
+        id: lic
+        if: ${{ matrix.license && steps.guard.outputs.skip != 'true' }}
+        # The 3-sidecar tier needs BOTH: a Pro test JWT and its public verification key (so the
+        # verifier resolves the test kid OFFLINE). Missing EITHER → SKIP (annotation), never fail.
+        # (The published federation image must itself be Pro-capable — 16.1 OQ-5 — for the JWT to
+        # verify; an OSS-only image silently falls back to Community and CrashLoops at 3 clusters.)
+        run: |
+          if [ -z "${{ secrets.SC4ES_PRO_TEST_JWT }}" ] || [ -z "${{ secrets.SC4ES_TEST_PUBLIC_KEY }}" ]; then
+            echo "::warning::missing SC4ES_PRO_TEST_JWT and/or SC4ES_TEST_PUBLIC_KEY — ${{ matrix.example }} (3 sidecars) needs a Pro JWT + its public key (FACT F #2); skipping (best-effort)"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Set up Helm
+        if: ${{ steps.guard.outputs.skip != 'true' && steps.lic.outputs.skip != 'true' }}
+        uses: azure/setup-helm@v4
+        with: { version: "${{ env.HELM_VERSION }}" }
+      - name: Create kind cluster
+        if: ${{ steps.guard.outputs.skip != 'true' && steps.lic.outputs.skip != 'true' }}
+        uses: helm/kind-action@v1.10.0
+        with:
+          version: ${{ env.KIND_VERSION }}
+          node_image: ${{ env.KIND_NODE_IMAGE }}
+          cluster_name: fed-${{ matrix.example }}
+      - name: Pull public images + kind load (federation + sidecars)
+        if: ${{ steps.guard.outputs.skip != 'true' && steps.lic.outputs.skip != 'true' }}
+        run: |
+          docker pull "docker.io/${FED_IMAGE}:${IMAGE_TAG}"
+          kind load docker-image "docker.io/${FED_IMAGE}:${IMAGE_TAG}" --name "fed-${{ matrix.example }}"
+          for v in $(echo '${{ matrix.es }}' | tr ',' '\n' | sort -u); do
+            img="docker.io/${SIDECAR_IMAGE_PREFIX}${v}-arrow-flight-sql:${IMAGE_TAG}"
+            docker pull "$img"
+            kind load docker-image "$img" --name "fed-${{ matrix.example }}"
+          done
+      - name: Deploy ES container(s) per sidecar (FACT D — reachable ES required)
+        if: ${{ steps.guard.outputs.skip != 'true' && steps.lic.outputs.skip != 'true' }}
+        run: ./.github/scripts/deploy-es.sh "${{ matrix.example }}" '${{ matrix.es }}'
+      - name: Create Pro license + public-key Secret (multi-sidecar only — FACT F #2)
+        if: ${{ matrix.license && steps.guard.outputs.skip != 'true' && steps.lic.outputs.skip != 'true' }}
+        run: |
+          # ONE Secret carries both the JWT (license-key) and the public verification JWK
+          # (license-public-key → SOFTCLIENT4ES_LICENSE_PUBLIC_KEY, the air-gap path in
+          # LicenseKeyVerifier.loadPublicKey Step 3 — without it the test kid never resolves).
+          kubectl create secret generic sc4es-license \
+            --from-literal=license-key="${{ secrets.SC4ES_PRO_TEST_JWT }}" \
+            --from-literal=license-public-key="${{ secrets.SC4ES_TEST_PUBLIC_KEY }}"
+          # The three-region example pins per-region license.secretName=sc4es-pro-license; also
+          # create that name so its bearer-auth sidecars + the federation share the test token.
+          kubectl create secret generic sc4es-pro-license \
+            --from-literal=license-key="${{ secrets.SC4ES_PRO_TEST_JWT }}" \
+            --from-literal=license-public-key="${{ secrets.SC4ES_TEST_PUBLIC_KEY }}" || true
+      - name: helm install
+        if: ${{ steps.guard.outputs.skip != 'true' && steps.lic.outputs.skip != 'true' }}
+        run: |
+          # The example values point sidecars[].elasticsearch.url at external https://*.example.com
+          # placeholders. deploy-es.sh stands up in-cluster ES Services; override each URL to the
+          # matching plaintext in-cluster Service. license/public-key are pointed at sc4es-license
+          # for the multi-sidecar tier.
+          extra=""
+          if [ "${{ matrix.license }}" = "true" ]; then
+            extra="--set license.secretName=sc4es-license --set license.publicKeySecretName=sc4es-license"
+          fi
+          # The three-region/heterogeneous examples set sidecars[].auth.method=bearer pointing at
+          # per-region sc4es-arrow-* Secrets that this CI does NOT create (the dedicated
+          # install-secrets job covers Secret-backed auth). Override the federation↔sidecar hop to
+          # auth.method=none so catalog discovery is what's under test here, not bearer auth — else
+          # the sidecars enforce bearer with an absent (optional) token and discovery fails.
+          urls=""
+          case "${{ matrix.example }}" in
+            single-cluster)
+              urls="--set sidecars[0].elasticsearch.url=http://es:9200" ;;
+            three-region|heterogeneous-ready)
+              urls="--set sidecars[0].elasticsearch.url=http://es-us-east-1:9200 \
+                    --set sidecars[1].elasticsearch.url=http://es-eu-west-1:9200 \
+                    --set sidecars[2].elasticsearch.url=http://es-ap-south-1:9200 \
+                    --set sidecars[0].auth.method=none \
+                    --set sidecars[1].auth.method=none \
+                    --set sidecars[2].auth.method=none" ;;
+          esac
+          helm install fed "${CHART_DIR}" \
+            -f "${CHART_DIR}/examples/${{ matrix.example }}/values.yaml" \
+            ${TEST_ADBC_IMAGE:+--set test.image=$TEST_ADBC_IMAGE} \
+            $urls $extra
+      - name: Wait all pods Ready (sidecars + federation — FACT D)
+        if: ${{ steps.guard.outputs.skip != 'true' && steps.lic.outputs.skip != 'true' }}
+        run: kubectl wait --for=condition=Ready pod -l app.kubernetes.io/part-of=softclient4es --timeout=300s
+      - name: helm test (GetCatalogs == expected — FACT A)
+        if: ${{ steps.guard.outputs.skip != 'true' && steps.lic.outputs.skip != 'true' }}
+        run: helm test fed --timeout 180s
+      - name: Diagnostics on failure
+        if: ${{ failure() }}
+        run: |
+          kubectl get pods -o wide || true
+          kubectl logs -l app.kubernetes.io/component=federation --tail=200 || true
+          kubectl logs -l app.kubernetes.io/component=sidecar --tail=100 || true
+          kubectl logs -l app.kubernetes.io/name=softclient4es-federation -c show-catalogs --tail=100 || true
+
+  # ── 4. PER-ES-VERSION SIDECAR MATRIX — 1 sidecar each (license-free) ────────
+  install-es-version:
+    runs-on: ubuntu-latest
+    needs: [static-checks, image-availability]
+    if: ${{ needs.image-availability.outputs.images_published == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        es: [6, 7, 8, 9]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set vm.max_map_count (Elasticsearch requirement)
+        run: sudo sysctl -w vm.max_map_count=262144
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with: { version: "${{ env.HELM_VERSION }}" }
+      - name: Create kind cluster
+        uses: helm/kind-action@v1.10.0
+        with: { version: "${{ env.KIND_VERSION }}", node_image: "${{ env.KIND_NODE_IMAGE }}", cluster_name: "fed-es${{ matrix.es }}" }
+      - name: Pull public images + kind load (federation + ES${{ matrix.es }} sidecar)
+        run: |
+          docker pull "docker.io/${FED_IMAGE}:${IMAGE_TAG}"
+          kind load docker-image "docker.io/${FED_IMAGE}:${IMAGE_TAG}" --name "fed-es${{ matrix.es }}"
+          img="docker.io/${SIDECAR_IMAGE_PREFIX}${{ matrix.es }}-arrow-flight-sql:${IMAGE_TAG}"
+          docker pull "$img"
+          kind load docker-image "$img" --name "fed-es${{ matrix.es }}"
+      - name: Deploy ES ${{ matrix.es }}
+        run: ./.github/scripts/deploy-es.sh es-version '${{ matrix.es }}'
+      - name: helm install (1 sidecar, ES ${{ matrix.es }}, license-free)
+        run: |
+          helm install fed "${CHART_DIR}" \
+            ${TEST_ADBC_IMAGE:+--set test.image=$TEST_ADBC_IMAGE} \
+            --set 'sidecars[0].name=primary' \
+            --set "sidecars[0].elasticsearchVersion=${{ matrix.es }}" \
+            --set 'sidecars[0].elasticsearch.url=http://es:9200' \
+            --set 'sidecars[0].default=true'
+      - name: Wait Ready + helm test (== 1)
+        run: |
+          kubectl wait --for=condition=Ready pod -l app.kubernetes.io/part-of=softclient4es --timeout=300s
+          helm test fed --timeout 180s
+      - name: Diagnostics on failure
+        if: ${{ failure() }}
+        run: |
+          kubectl get pods -o wide || true
+          kubectl logs -l app.kubernetes.io/component=federation --tail=200 || true
+          kubectl logs -l app.kubernetes.io/component=sidecar --tail=100 || true
+
+  # ── 5. SECRET MANAGEMENT — raw Secret + SealedSecrets (1 sidecar, license-free) ─
+  install-secrets:
+    runs-on: ubuntu-latest
+    needs: [static-checks, image-availability]
+    if: ${{ needs.image-availability.outputs.images_published == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [raw-secret, sealed-secrets]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set vm.max_map_count (Elasticsearch requirement)
+        run: sudo sysctl -w vm.max_map_count=262144
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with: { version: "${{ env.HELM_VERSION }}" }
+      - name: Create kind cluster
+        uses: helm/kind-action@v1.10.0
+        with: { version: "${{ env.KIND_VERSION }}", node_image: "${{ env.KIND_NODE_IMAGE }}", cluster_name: "fed-${{ matrix.backend }}" }
+      - name: Pull public images + kind load (federation + ES8 sidecar)
+        run: |
+          docker pull "docker.io/${FED_IMAGE}:${IMAGE_TAG}"
+          kind load docker-image "docker.io/${FED_IMAGE}:${IMAGE_TAG}" --name "fed-${{ matrix.backend }}"
+          img="docker.io/${SIDECAR_IMAGE_PREFIX}8-arrow-flight-sql:${IMAGE_TAG}"
+          docker pull "$img"
+          kind load docker-image "$img" --name "fed-${{ matrix.backend }}"
+      - name: Deploy ES 8
+        run: ./.github/scripts/deploy-es.sh secrets '8'
+      - name: Install SealedSecrets controller + materialize the ES Secret (sealed-secrets only)
+        if: ${{ matrix.backend == 'sealed-secrets' }}
+        run: ./.github/scripts/install-sealed-secrets.sh es-creds
+      - name: Create the ES auth Secret (raw-secret only)
+        if: ${{ matrix.backend == 'raw-secret' }}
+        run: |
+          kubectl create secret generic es-creds \
+            --from-literal=es-auth-method=basic \
+            --from-literal=es-username=elastic --from-literal=es-password=changeme
+      - name: helm install (1 sidecar, Secret-backed ES auth)
+        run: |
+          helm install fed "${CHART_DIR}" \
+            ${TEST_ADBC_IMAGE:+--set test.image=$TEST_ADBC_IMAGE} \
+            --set 'sidecars[0].name=primary' --set 'sidecars[0].elasticsearchVersion=8' \
+            --set 'sidecars[0].elasticsearch.url=http://es:9200' \
+            --set 'sidecars[0].elasticsearch.credentialsSecretName=es-creds' \
+            --set 'sidecars[0].default=true'
+      - name: Wait Ready + assert ES env injected + helm test
+        run: |
+          kubectl wait --for=condition=Ready pod -l app.kubernetes.io/part-of=softclient4es --timeout=300s
+          # Assert the Secret-backed env actually reached the sidecar container (16.3 AC9).
+          kubectl get pod -l app.kubernetes.io/component=sidecar \
+            -o jsonpath='{.items[0].spec.containers[0].env[*].name}' | grep -q ELASTIC_CREDENTIALS_USERNAME
+          helm test fed --timeout 180s
+      - name: Diagnostics on failure
+        if: ${{ failure() }}
+        run: |
+          kubectl get pods -o wide || true
+          kubectl logs -l app.kubernetes.io/component=federation --tail=200 || true
+          kubectl logs -l app.kubernetes.io/component=sidecar --tail=100 || true
+
+  # ── 6. UPGRADE — single-cluster -> three-region (Pro license, best-effort) ──
+  upgrade:
+    runs-on: ubuntu-latest
+    needs: [static-checks, image-availability]
+    if: ${{ needs.image-availability.outputs.images_published == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set vm.max_map_count (Elasticsearch requirement)
+        run: sudo sysctl -w vm.max_map_count=262144
+      - name: Skip if examples missing or no Pro test license (FACT C + FACT F)
+        id: guard
+        # Upgrade ends at 3 clusters → same Pro gate as install-topology: JWT secret AND
+        # public-key secret (+ the published image must be Pro-capable, 16.1 OQ-5).
+        run: |
+          if [ ! -f "${CHART_DIR}/examples/single-cluster/values.yaml" ] || [ ! -f "${CHART_DIR}/examples/three-region/values.yaml" ] \
+             || [ -z "${{ secrets.SC4ES_PRO_TEST_JWT }}" ] || [ -z "${{ secrets.SC4ES_TEST_PUBLIC_KEY }}" ]; then
+            echo "::warning::upgrade test needs both examples (16.4) + SC4ES_PRO_TEST_JWT + SC4ES_TEST_PUBLIC_KEY (and a Pro-capable image, FACT F); skipping"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Set up Helm
+        if: ${{ steps.guard.outputs.skip != 'true' }}
+        uses: azure/setup-helm@v4
+        with: { version: "${{ env.HELM_VERSION }}" }
+      - name: Create kind cluster
+        if: ${{ steps.guard.outputs.skip != 'true' }}
+        uses: helm/kind-action@v1.10.0
+        with: { version: "${{ env.KIND_VERSION }}", node_image: "${{ env.KIND_NODE_IMAGE }}", cluster_name: fed-upgrade }
+      - name: Pull public images + kind load + ES + license + install single-cluster
+        if: ${{ steps.guard.outputs.skip != 'true' }}
+        run: |
+          docker pull "docker.io/${FED_IMAGE}:${IMAGE_TAG}"
+          kind load docker-image "docker.io/${FED_IMAGE}:${IMAGE_TAG}" --name fed-upgrade
+          for v in 8 9; do
+            img="docker.io/${SIDECAR_IMAGE_PREFIX}${v}-arrow-flight-sql:${IMAGE_TAG}"
+            docker pull "$img"
+            kind load docker-image "$img" --name fed-upgrade
+          done
+          ./.github/scripts/deploy-es.sh three-region '8,8,9'
+          # single-cluster needs a `es` Service too (its sidecar URL is overridden to http://es:9200).
+          ./.github/scripts/deploy-es.sh secrets '8'
+          for n in sc4es-license sc4es-pro-license; do
+            kubectl create secret generic "$n" \
+              --from-literal=license-key="${{ secrets.SC4ES_PRO_TEST_JWT }}" \
+              --from-literal=license-public-key="${{ secrets.SC4ES_TEST_PUBLIC_KEY }}" || true
+          done
+          helm install fed "${CHART_DIR}" -f "${CHART_DIR}/examples/single-cluster/values.yaml" \
+            ${TEST_ADBC_IMAGE:+--set test.image=$TEST_ADBC_IMAGE} \
+            --set sidecars[0].elasticsearch.url=http://es:9200
+          kubectl wait --for=condition=Ready pod -l app.kubernetes.io/part-of=softclient4es --timeout=300s
+      - name: helm upgrade -> three-region + assert topology change
+        if: ${{ steps.guard.outputs.skip != 'true' }}
+        run: |
+          before=$(kubectl get deploy -l app.kubernetes.io/component=sidecar --no-headers | wc -l)
+          # Same auth.method=none override as install-topology: this CI tests the topology change
+          # + catalog count, not the per-region bearer Secrets (which it does not create).
+          helm upgrade fed "${CHART_DIR}" -f "${CHART_DIR}/examples/three-region/values.yaml" \
+            ${TEST_ADBC_IMAGE:+--set test.image=$TEST_ADBC_IMAGE} \
+            --set license.secretName=sc4es-license --set license.publicKeySecretName=sc4es-license \
+            --set sidecars[0].elasticsearch.url=http://es-us-east-1:9200 \
+            --set sidecars[1].elasticsearch.url=http://es-eu-west-1:9200 \
+            --set sidecars[2].elasticsearch.url=http://es-ap-south-1:9200 \
+            --set sidecars[0].auth.method=none \
+            --set sidecars[1].auth.method=none \
+            --set sidecars[2].auth.method=none
+          kubectl wait --for=condition=Ready pod -l app.kubernetes.io/part-of=softclient4es --timeout=300s
+          after=$(kubectl get deploy -l app.kubernetes.io/component=sidecar --no-headers | wc -l)
+          [ "$after" -gt "$before" ] || { echo "::error::upgrade did not add sidecar Deployments ($before -> $after)"; exit 1; }
+          helm test fed --timeout 180s
+      - name: Diagnostics on failure
+        if: ${{ failure() && steps.guard.outputs.skip != 'true' }}
+        run: |
+          kubectl get pods,deploy -o wide || true
+          kubectl logs -l app.kubernetes.io/component=federation --tail=200 || true
+
+  # ── 7. UNINSTALL — clean teardown, no leftovers (license-free, 0 sidecars) ──
+  uninstall:
+    runs-on: ubuntu-latest
+    needs: [static-checks, image-availability]
+    if: ${{ needs.image-availability.outputs.images_published == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with: { version: "${{ env.HELM_VERSION }}" }
+      - name: Create kind cluster
+        uses: helm/kind-action@v1.10.0
+        with: { version: "${{ env.KIND_VERSION }}", node_image: "${{ env.KIND_NODE_IMAGE }}", cluster_name: fed-uninstall }
+      - name: Pull public federation image + kind load
+        run: |
+          docker pull "docker.io/${FED_IMAGE}:${IMAGE_TAG}"
+          kind load docker-image "docker.io/${FED_IMAGE}:${IMAGE_TAG}" --name fed-uninstall
+      - name: Install (0-sidecar — license-free, no ES needed) then uninstall
+        run: |
+          helm install fed "${CHART_DIR}"
+          kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=softclient4es-federation --timeout=180s
+          helm uninstall fed
+          sleep 5
+          leftover=$(kubectl get all,configmap -l app.kubernetes.io/instance=fed --no-headers 2>/dev/null | grep -v '^kubernetes ' | wc -l)
+          [ "$leftover" = "0" ] || { echo "::error::helm uninstall left $leftover resources"; kubectl get all,configmap -l app.kubernetes.io/instance=fed; exit 1; }

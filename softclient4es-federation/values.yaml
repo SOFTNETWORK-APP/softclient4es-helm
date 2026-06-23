@@ -115,6 +115,16 @@ license:
   secretName: ""
   licenseKeyKey: license-key    # Secret data key holding the JWT license -> SOFTCLIENT4ES_LICENSE_KEY
   apiKeyKey: api-key            # Secret data key holding the API key      -> SOFTCLIENT4ES_API_KEY
+  # ── Offline license public-key (Story 16.5, FACT F #2) ────────────────────────
+  # OPTIONAL. When the federation must verify a license JWT WITHOUT reaching the
+  # license server's JWKS endpoint (air-gapped clusters, or a test-signed JWT whose
+  # `kid` is not in the prod JWKS), point publicKeySecretName at a Secret whose
+  # `publicKeyKey` data key holds the matching Ed25519 public JWK. It is mounted as
+  # SOFTCLIENT4ES_LICENSE_PUBLIC_KEY — the air-gap path in LicenseKeyVerifier.loadPublicKey
+  # (Step 3, VERIFIED). Leave empty (the default) to use the normal JWKS fetch. Renders
+  # NOTHING when empty, so the golden render and every shipped example are unaffected.
+  publicKeySecretName: ""
+  publicKeyKey: license-public-key   # Secret data key holding the Ed25519 public JWK -> SOFTCLIENT4ES_LICENSE_PUBLIC_KEY
 
 service:
   type: ClusterIP
@@ -313,9 +323,12 @@ sidecarDefaults:
       drop:
         - ALL
 
-# `helm test` smoke Job (Story 16.2). Connects to the federation Flight SQL endpoint
-# and asserts GetCatalogs (one catalog per registered sidecar) == len(sidecars).
+# `helm test` smoke Job (Story 16.2, hardened for CI in Story 16.5). Connects to the
+# federation Flight SQL endpoint and asserts GetCatalogs (one catalog per registered
+# sidecar) == len(sidecars), with a bounded connect-retry (the federation is NotReady
+# until ALL downstreams are discovered — the gRPC readiness aggregate is all-or-nothing).
 # The default image pip-installs ADBC at runtime (needs PyPI reachability) — pin an
-# internal/pre-baked image for air-gapped or rate-limited clusters.
+# internal/pre-baked image (test.image) for air-gapped or rate-limited clusters.
 test:
   image: ""                       # default "python:3.12-slim" when empty
+  adbcVersion: "1.6.0"            # adbc_driver_flightsql / adbc_driver_manager version (runtime pip when image not pre-baked)
