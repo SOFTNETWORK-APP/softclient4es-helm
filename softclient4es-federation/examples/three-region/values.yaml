@@ -1,0 +1,63 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# SoftClient4ES Federation — THREE-REGION (mixed ES versions) example.
+#
+# Federation + 3 sidecars across us-east-1 (ES 8), eu-west-1 (ES 8), ap-south-1 (ES 9).
+# Demonstrates GDPR data residency, cross-cluster JOIN, SRE incident triage, and a
+# mixed-ES-version migration window (two regions on ES 8 while ap-south-1 is on ES 9).
+#
+# ⚠️ REQUIRES A PRO (or Enterprise) LICENSE.
+#    3 sidecars = 3 clusters; Community caps at maxClusters=1, so WITHOUT a Pro/
+#    Enterprise license the federation Pod CrashLoops by design (startup quota guard).
+#    Create a Secret `sc4es-pro-license` (data key `license-key` = your JWT) first.
+#
+# Install:
+#   helm install softclient4es-federation softclient4es-federation \
+#     -f examples/three-region/values.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Pro/Enterprise license — REQUIRED for >=2 sidecars (maxClusters: Community=1, Pro=5, Ent=∞).
+license:
+  secretName: "sc4es-pro-license"          # data key `license-key` = JWT (override via licenseKeyKey)
+
+telemetry:
+  enabled: true
+
+federation:
+  probes:
+    # All-or-nothing gRPC readiness aggregate (VERIFIED): ANY unreachable sidecar
+    # makes the federation NotReady → ALL queries fail (incl. healthy regions).
+    # For multi-region partial-availability, set useGrpc: false (TCP readiness) —
+    # see README "Readiness & the all-or-nothing aggregate".
+    useGrpc: true
+
+sidecars:
+  # ── us-east-1 (Elasticsearch 8) — default region for bare-table routing ──
+  - name: us-east-1
+    elasticsearchVersion: 8
+    elasticsearch:
+      url: "https://es-us-east-1.example.com:9200"
+      credentialsSecretName: "sc4es-es-us-east-1"
+    auth:
+      method: bearer                       # sidecar incoming auth (single source of truth)
+      credentialsSecretName: "sc4es-arrow-us-east-1"   # arrow-bearer-token -> ARROW_AUTH_* + CONFIG_FORCE_*
+    default: true
+
+  # ── eu-west-1 (Elasticsearch 8) — GDPR data-residency region ──
+  - name: eu-west-1
+    elasticsearchVersion: 8
+    elasticsearch:
+      url: "https://es-eu-west-1.example.com:9200"
+      credentialsSecretName: "sc4es-es-eu-west-1"
+    auth:
+      method: bearer
+      credentialsSecretName: "sc4es-arrow-eu-west-1"
+
+  # ── ap-south-1 (Elasticsearch 9) — region mid-migration to ES 9 ──
+  - name: ap-south-1
+    elasticsearchVersion: 9
+    elasticsearch:
+      url: "https://es-ap-south-1.example.com:9200"
+      credentialsSecretName: "sc4es-es-ap-south-1"
+    auth:
+      method: bearer
+      credentialsSecretName: "sc4es-arrow-ap-south-1"

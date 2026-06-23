@@ -1,3 +1,8 @@
+{{- /* Story 16.3: does ANY sidecar use a Secret-backed (non-none) auth method? If so the
+       federation must (a) set -Dconfig.override_with_env_vars=true and (b) inject the
+       CONFIG_FORCE_* credential env from the SAME Secret the sidecar reads. */ -}}
+{{- $secretAuth := false }}
+{{- range $s := .Values.sidecars }}{{- if and $s.auth (ne (lower (default "none" $s.auth.method)) "none") $s.auth.credentialsSecretName }}{{- $secretAuth = true }}{{- end }}{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -73,13 +78,70 @@ spec:
                   key: {{ .Values.license.apiKeyKey | default "api-key" }}
                   optional: true
             {{- end }}
+            {{- /* Story 16.5 (FACT F #2): offline license public-key for air-gapped /
+                   test-signed JWT verification (LicenseKeyVerifier.loadPublicKey Step 3).
+                   Gated INDEPENDENTLY of license.secretName so the multi-sidecar CI can
+                   point it at the same Secret. Renders nothing at the "" default, so the
+                   golden and every example are byte-stable. */}}
+            {{- if .Values.license.publicKeySecretName }}
+            - name: SOFTCLIENT4ES_LICENSE_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.license.publicKeySecretName }}
+                  key: {{ .Values.license.publicKeyKey | default "license-public-key" }}
+                  optional: true
+            {{- end }}
             {{- if gt (len .Values.sidecars) 0 }}
             # Point Typesafe Config at the mounted ConfigMap so ConfigFactory.load()
             # picks up the `servers` map (which has NO env override). The native-packager
             # bash launcher reads $JAVA_OPTS at runtime (VERIFIED) and prepends it to the
             # JVM args; reference.conf still loads, so the FEDERATION_* env defaults stay.
+            # Story 16.3: when any sidecar uses Secret-backed auth, also enable
+            # override_with_env_vars so the CONFIG_FORCE_* env below force the credential
+            # leaf onto the loaded config BEFORE FederationConfig.validate() runs.
             - name: JAVA_OPTS
-              value: "-Dconfig.file=/opt/docker/conf/application.conf"
+              value: "-Dconfig.file=/opt/docker/conf/application.conf{{ if and $secretAuth .Values.federation.credentialsFromEnv }} -Dconfig.override_with_env_vars=true{{ end }}"
+            {{- end }}
+            {{- /* Federation OUTGOING credential leaves the Secret as CONFIG_FORCE_* env (Story
+                   16.3, FACT A). ONE Secret feeds BOTH the sidecar (ARROW_AUTH_*) and the
+                   federation here. The KEY/path is mangled (RFC1123-gated in the configmap);
+                   the VALUE is a literal env string (no HOCON re-parse — special chars safe). */}}
+            {{- if .Values.federation.credentialsFromEnv }}
+            {{- range $s := .Values.sidecars }}
+            {{- with $s.auth }}
+            {{- if and (ne (lower (default "none" .method)) "none") .credentialsSecretName }}
+            {{- $m := lower .method }}
+            {{- if eq $m "basic" }}
+            - name: {{ include "softclient4es-federation.configForceEnvName" (dict "name" $s.name "key" "username") }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .credentialsSecretName }}
+                  key: {{ include "softclient4es-federation.arrowSecretKey" (dict "auth" . "field" "username") }}
+                  optional: true
+            - name: {{ include "softclient4es-federation.configForceEnvName" (dict "name" $s.name "key" "password") }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .credentialsSecretName }}
+                  key: {{ include "softclient4es-federation.arrowSecretKey" (dict "auth" . "field" "password") }}
+                  optional: true
+            {{- else if eq $m "bearer" }}
+            - name: {{ include "softclient4es-federation.configForceEnvName" (dict "name" $s.name "key" "bearer-token") }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .credentialsSecretName }}
+                  key: {{ include "softclient4es-federation.arrowSecretKey" (dict "auth" . "field" "bearerToken") }}
+                  optional: true
+            {{- else if or (eq $m "apikey") (eq $m "api") }}
+            - name: {{ include "softclient4es-federation.configForceEnvName" (dict "name" $s.name "key" "api-key") }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .credentialsSecretName }}
+                  key: {{ include "softclient4es-federation.arrowSecretKey" (dict "auth" . "field" "apiKey") }}
+                  optional: true
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
             {{- end }}
           # --- Probes (FACT A / A1): TCP-socket only for the skeleton. ---
           # The federation health endpoint is gRPC grpc.health.v1.Health and returns

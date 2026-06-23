@@ -126,3 +126,51 @@ app.kubernetes.io/part-of: softclient4es
 {{- if gt (len $parts) 1 -}}{{ last $parts }}{{- else -}}9200{{- end -}}
 {{- else -}}9200{{- end -}}
 {{- end -}}
+
+{{/*
+Build the Typesafe Config `override_with_env_vars` env-var name for a federation->sidecar
+credential leaf (Story 16.3). VERIFIED mangling (github.com/lightbend/config): strip
+CONFIG_FORCE_, then `_`->`.`, `__`->`-`, `___`->`_`. So to TARGET a path containing dashes
+we EMIT `__`. Input: dict {name: <sidecar name>, key: <dash-cased credential key e.g.
+"bearer-token">}. The fixed path arrow.flight.federation.servers.<name>.credentials.<key> ->
+  CONFIG_FORCE_arrow_flight_federation_servers_<name|->__>_credentials_<key|->__>
+Example: name="prod-us" key="bearer-token" ->
+  CONFIG_FORCE_arrow_flight_federation_servers_prod__us_credentials_bearer__token
+GUARD: the mangling is injective ONLY for RFC1123-label sidecar names (lowercase
+alphanumeric + '-'). A name containing '_'/'.'/uppercase would mangle to a WRONG
+CONFIG_FORCE_* path that silently does NOT override (-> federation validate() CrashLoop).
+The sidecar-name validation block in federation-configmap.yaml enforces a strict RFC1123
+check, so by the time this helper runs the name is guaranteed dash-only — the
+`replace "-" "__"` transform is then reversible/injective.
+*/}}
+{{- define "softclient4es-federation.configForceEnvName" -}}
+{{- $name := .name | replace "-" "__" -}}
+{{- $key := .key | replace "-" "__" -}}
+{{- printf "CONFIG_FORCE_arrow_flight_federation_servers_%s_credentials_%s" $name $key -}}
+{{- end -}}
+
+{{/*
+ES Secret data-key for a given logical field, honoring sidecars[].elasticsearch.secretKeys
+(Story 16.3). Input: dict {es: $s.elasticsearch, field: "username"} -> the Secret key
+(default contract). Falls back to the FACT-C default when no override is given.
+*/}}
+{{- define "softclient4es-federation.esSecretKey" -}}
+{{- $defaults := dict "authMethod" "es-auth-method" "username" "es-username" "password" "es-password" "apiKey" "es-api-key" "bearerToken" "es-bearer-token" -}}
+{{- $field := .field -}}
+{{- $override := "" -}}
+{{- if .es.secretKeys -}}{{- $override = index .es.secretKeys $field | default "" -}}{{- end -}}
+{{- if $override -}}{{ $override }}{{- else -}}{{ index $defaults $field }}{{- end -}}
+{{- end -}}
+
+{{/*
+Arrow-auth Secret data-key for a given logical field, honoring sidecars[].auth.secretKeys
+(Story 16.3). Input: dict {auth: $s.auth, field: "bearerToken"} -> the Secret key
+(default contract). Falls back to the FACT-C default when no override is given.
+*/}}
+{{- define "softclient4es-federation.arrowSecretKey" -}}
+{{- $defaults := dict "username" "arrow-username" "password" "arrow-password" "bearerToken" "arrow-bearer-token" "apiKey" "arrow-api-key" -}}
+{{- $field := .field -}}
+{{- $override := "" -}}
+{{- if .auth.secretKeys -}}{{- $override = index .auth.secretKeys $field | default "" -}}{{- end -}}
+{{- if $override -}}{{ $override }}{{- else -}}{{ index $defaults $field }}{{- end -}}
+{{- end -}}

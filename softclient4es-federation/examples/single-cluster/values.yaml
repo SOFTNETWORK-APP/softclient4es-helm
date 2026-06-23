@@ -1,0 +1,48 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# SoftClient4ES Federation — SINGLE-CLUSTER example.
+#
+# Federation Flight SQL server + ONE Arrow Flight SQL sidecar in front of ONE
+# Elasticsearch cluster. This is the FREE tier: a single sidecar boots on the
+# Community license (no license.secretName needed — maxClusters=1 permits exactly
+# one cluster). Use it to expose JOIN routing + licensing + a Flight SQL endpoint
+# for ONE ES cluster, externally reachable, with zero licensing cost.
+#
+# Install:
+#   helm install softclient4es-federation softclient4es-federation \
+#     -f examples/single-cluster/values.yaml
+#
+# EDIT BEFORE INSTALL: sidecars[0].elasticsearch.url and (if your ES needs auth)
+# create a Secret named `sc4es-es-credentials` and reference it below.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# No license needed — a single-cluster federation runs on Community (maxClusters=1).
+license:
+  secretName: ""
+
+# Daily product-instance telemetry ping is ON by default. Set false to opt out.
+telemetry:
+  enabled: true
+
+# Single downstream sidecar (no SPOF amplification → gRPC readiness default is fine).
+sidecars:
+  - name: primary                         # RFC1123; servers.primary + k8s suffix
+    elasticsearchVersion: 8               # 6|7|8|9 → selects the sidecar image
+    elasticsearch:
+      # REPLACE with your ES endpoint. The chart DECOMPOSES this into
+      # ELASTIC_SCHEME/ELASTIC_HOST/ELASTIC_PORT (there is NO single ES-URL env).
+      # ⚠️ MUST be the canonical `scheme://host:port` form. A scheme-less value
+      # silently defaults to scheme=http; a port-less value silently defaults to
+      # port=9200 — either can break the ES connect against a TLS/non-9200 cluster.
+      # If your URL has a path/userinfo, set explicit scheme/host/port instead.
+      url: "https://es.example.com:9200"
+      # scheme: https        # optional explicit override (wins over url) -> ELASTIC_SCHEME
+      # host: es.example.com  # optional explicit override (wins over url) -> ELASTIC_HOST
+      # port: 9200            # optional explicit override (wins over url) -> ELASTIC_PORT
+      # K8s Secret you create (chart does NOT create it). Keys: es-auth-method,
+      # es-username, es-password, es-api-key, es-bearer-token. Leave empty for noauth ES.
+      credentialsSecretName: "sc4es-es-credentials"
+    default: true                          # the only cluster → bare-table routing
+    # Sidecar incoming auth OFF (intra-cluster trust). Federation reaches it plaintext
+    # over the in-cluster Service. For a Secret-backed sidecar auth, see 16.3 docs.
+    auth:
+      method: none
