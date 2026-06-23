@@ -1,0 +1,23 @@
+# tests/values/ingress-tls.yaml — federation behind a cert-manager TLS Ingress.
+# Single sidecar (license-free) so this render also stays unconditional in CI.
+federation:
+  tls:
+    enabled: true
+    secretName: fed-tls
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
+  hosts:
+    - host: fed.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+sidecars:
+  - name: prod-us
+    elasticsearchVersion: 8
+    elasticsearch:
+      url: "https://es-us.example.com:9200"
+    default: true

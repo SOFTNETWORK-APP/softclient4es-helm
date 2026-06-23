@@ -1,0 +1,54 @@
+{{- if .Values.ingress.enabled -}}
+{{- $fullName := include "softclient4es-federation.fullname" . -}}
+{{- $svcPort := .Values.service.port -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullName }}
+  labels:
+    {{- include "softclient4es-federation.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    # Flight SQL is gRPC — the controller MUST proxy gRPC backends, e.g. nginx:
+    #   nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
+    # (NOT "GRPCS": the federation Pod is PLAINTEXT h2c upstream — the Ingress terminates
+    # client TLS and forwards cleartext to the pod). HTTP/2-to-client needs a TLS listener,
+    # so a plaintext Ingress will not proxy Flight SQL — TLS-at-the-edge is the supported path.
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- /* TLS: explicit ingress.tls wins; else auto from federation.tls when enabled. */}}
+  {{- if .Values.ingress.tls }}
+  tls:
+    {{- toYaml .Values.ingress.tls | nindent 4 }}
+  {{- else if and .Values.federation.tls.enabled .Values.federation.tls.secretName }}
+  tls:
+    - secretName: {{ .Values.federation.tls.secretName }}
+      hosts:
+        {{- range .Values.ingress.hosts }}
+        {{- if .host }}
+        - {{ .host | quote }}
+        {{- end }}
+        {{- end }}
+  {{- end }}
+  rules:
+    {{- range .Values.ingress.hosts }}
+    {{- if .host }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType | default "Prefix" }}
+            backend:
+              service:
+                name: {{ $fullName }}
+                port:
+                  number: {{ $svcPort }}
+          {{- end }}
+    {{- end }}
+    {{- end }}
+{{- end }}

@@ -1,0 +1,18 @@
+{{- range $i, $s := .Values.sidecars }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "softclient4es-federation.sidecarFullname" (dict "ctx" $ "sidecar" $s) }}
+  labels:
+    {{- include "softclient4es-federation.sidecarLabels" (dict "ctx" $ "sidecar" $s) | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: flight-sql
+      port: 32010
+      targetPort: flight-sql
+      protocol: TCP
+  selector:
+    {{- include "softclient4es-federation.sidecarSelectorLabels" (dict "ctx" $ "sidecar" $s) | nindent 4 }}
+{{- end }}

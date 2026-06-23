@@ -7,7 +7,10 @@ description: >-
   federation server; sidecars are added in a later chart revision.
 type: application
 # Chart version — bump on every chart change (SemVer).
-version: 0.1.0
+# 0.2.0: per-ES-version sidecars + federation servers ConfigMap (Story 16.2).
+# 0.3.0: Kubernetes Secrets (key-name contract + per-key override + envFrom),
+#        Secret-backed federation→sidecar creds (CONFIG_FORCE_*), TLS/Ingress (Story 16.3).
+version: 0.3.0
 # The federation application/image version this chart deploys by default.
 # Keep in sync with docker.io/softnetwork/softclient4es-federation:<tag>.
 # NOTE: this appVersion is the future PUBLISHED-release tag (OQ-2) of the public
