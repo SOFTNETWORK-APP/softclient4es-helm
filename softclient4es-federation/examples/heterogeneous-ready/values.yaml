@@ -1,0 +1,108 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# SoftClient4ES Federation — HETEROGENEOUS-READY example.
+#
+# This is the THREE-REGION topology (3 ES sidecars) you can run on R1 TODAY, plus a
+# commented-out preview of the R2b "duckdb-attach" heterogeneous sources (PostgreSQL,
+# MySQL, Snowflake). When R2b ships, those slot into the SAME federation `servers`
+# map WITHOUT restructuring this deployment — the federation already federates them
+# the moment they are activated.
+#
+# ⚠️ Like three-region, this needs a PRO/ENTERPRISE license (3 active ES sidecars =
+#    3 clusters; Community maxClusters=1). See README.
+#
+# Install:
+#   helm install softclient4es-federation softclient4es-federation \
+#     -f examples/heterogeneous-ready/values.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+
+license:
+  secretName: "sc4es-pro-license"
+
+telemetry:
+  enabled: true
+
+federation:
+  probes:
+    useGrpc: true
+
+# R1-ACTIVE: 3 Elasticsearch sidecars (same as three-region).
+sidecars:
+  - name: us-east-1
+    elasticsearchVersion: 8
+    elasticsearch:
+      url: "https://es-us-east-1.example.com:9200"
+      credentialsSecretName: "sc4es-es-us-east-1"
+    auth:
+      method: bearer
+      credentialsSecretName: "sc4es-arrow-us-east-1"
+    default: true
+  - name: eu-west-1
+    elasticsearchVersion: 8
+    elasticsearch:
+      url: "https://es-eu-west-1.example.com:9200"
+      credentialsSecretName: "sc4es-es-eu-west-1"
+    auth:
+      method: bearer
+      credentialsSecretName: "sc4es-arrow-eu-west-1"
+  - name: ap-south-1
+    elasticsearchVersion: 9
+    elasticsearch:
+      url: "https://es-ap-south-1.example.com:9200"
+      credentialsSecretName: "sc4es-es-ap-south-1"
+    auth:
+      method: bearer
+      credentialsSecretName: "sc4es-arrow-ap-south-1"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# R2b PREVIEW — heterogeneous "duckdb-attach" sources (NOT active in R1).
+#
+# ⚠️⚠️ UNCOMMENTING THE BLOCK BELOW DOES NOTHING ON R1. ⚠️⚠️
+#   This is NOT a chart values key. There is NO `values.yaml` key in R1 that parses
+#   `duckdb-attach` / a raw `servers { }` HOCON map. The federation `servers` map is
+#   rendered into a ConfigMap ENTIRELY from the `sidecars[]` array above (Flight SQL
+#   servers only — one entry per `elasticsearchVersion`). If you uncomment the HOCON
+#   below and `helm install`, Helm treats it as inert YAML comments, the chart ignores
+#   it, the federation never sees a PostgreSQL/MySQL/Snowflake catalog, and
+#   `SHOW CATALOGS` still returns 3 (the ES sidecars only). Do NOT file a "my PG catalog
+#   didn't show up" ticket — R2b (Epic 25/26) is what wires these into the `servers` map.
+#
+# The entries below show the EXACT HOCON shape these sources will take in the federation
+# `servers` map once R2b ships — copied verbatim from
+# federation/src/main/resources/reference.conf. They are illustrative ONLY here.
+#
+# ⚠️ Each duckdb-attach server, once ACTIVE, counts toward maxClusters too
+#    (clusterCount = servers.size, ALL server types). 3 ES + 3 attach = 6 clusters →
+#    exceeds Pro's maxClusters=5 → needs Enterprise. (3 ES + 2 attach = 5 still fits
+#    Pro exactly; only the 6th server tips into Enterprise.) Plan tier accordingly.
+#
+# ── DuckDB ATTACH (PostgreSQL) ──
+#   analytics_pg {
+#     host = "pg.internal"
+#     port = 5432
+#     type = "duckdb-attach"
+#     dialect = "postgresql"
+#     read-only = true
+#     expected-catalog = "analytics_db"
+#     credentials { username = "readonly"  password = "secret" }
+#   }
+# ── DuckDB ATTACH (MySQL) ──
+#   orders_mysql {
+#     host = "mysql.internal"
+#     port = 3306
+#     type = "duckdb-attach"
+#     dialect = "mysql"
+#     expected-catalog = "orders_db"
+#     credentials { username = "reader"  password = "secret" }
+#   }
+# ── DuckDB ATTACH (Snowflake — custom attach-string + secret) ──
+#   snowflake_wh {
+#     host = ""
+#     type = "duckdb-attach"
+#     dialect = "snowflake"
+#     read-only = true
+#     duckdb {
+#       attach-string = "account=my-account"
+#       secret { TYPE = "snowflake"  ACCOUNT = "my-account"  USER = "admin"  PASSWORD = "pw" }
+#     }
+#   }
+# ─────────────────────────────────────────────────────────────────────────────
