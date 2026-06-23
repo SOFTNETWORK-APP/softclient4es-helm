@@ -1,0 +1,116 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "softclient4es-federation.fullname" . }}
+  labels:
+    {{- include "softclient4es-federation.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "softclient4es-federation.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "softclient4es-federation.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "softclient4es-federation.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: federation
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: flight-sql
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+            - name: health
+              containerPort: {{ .Values.federation.health.port }}
+              protocol: TCP
+          env:
+            - name: FEDERATION_HOST
+              value: "0.0.0.0"
+            - name: FEDERATION_PORT
+              value: {{ .Values.service.port | quote }}
+            - name: FEDERATION_MAX_MEMORY
+              value: {{ .Values.federation.maxMemory | quote }}
+            - name: FEDERATION_QUERY_TIMEOUT
+              value: {{ .Values.federation.queryTimeoutSeconds | quote }}
+            - name: FEDERATION_HEALTH_PORT
+              value: {{ .Values.federation.health.port | quote }}
+            - name: FEDERATION_HEALTH_PROBE_TIMEOUT
+              value: {{ .Values.federation.health.probeTimeoutSeconds | quote }}
+            - name: FEDERATION_DUCKDB_PATH
+              value: {{ .Values.federation.duckdb.path | quote }}
+            - name: FEDERATION_UPGRADE_URL
+              value: {{ .Values.federation.upgradeUrl | quote }}
+            - name: SOFTCLIENT4ES_TELEMETRY_ENABLED
+              value: {{ .Values.telemetry.enabled | quote }}
+            {{- if .Values.license.secretName }}
+            - name: SOFTCLIENT4ES_LICENSE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.license.secretName }}
+                  key: {{ .Values.license.licenseKeyKey | default "license-key" }}
+                  optional: true
+            - name: SOFTCLIENT4ES_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.license.secretName }}
+                  key: {{ .Values.license.apiKeyKey | default "api-key" }}
+                  optional: true
+            {{- end }}
+          # --- Probes (FACT A / A1): TCP-socket only for the skeleton. ---
+          # The federation health endpoint is gRPC grpc.health.v1.Health and returns
+          # NOT_SERVING while servers={} (HealthService.scala:105-111), so a gRPC Check
+          # probe would fail. A TCP probe proves the process is listening, which is the
+          # correct liveness/readiness signal for a no-downstream skeleton. Story 16.2
+          # switches readiness to a gRPC probe once sidecars exist.
+          livenessProbe:
+            tcpSocket:
+              port: health
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.federation.health.probeTimeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          readinessProbe:
+            tcpSocket:
+              port: flight-sql
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.federation.health.probeTimeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: scratch
+              mountPath: /tmp
+      volumes:
+        # readOnlyRootFilesystem=true requires a writable scratch dir: the org.duckdb
+        # JDBC driver extracts its native libduckdb_java library to java.io.tmpdir (/tmp)
+        # on every boot (PersistentDuckDB is instantiated unconditionally — even with
+        # path=":memory:"), and the federation stages CTAS / INSERT-with-JOIN Parquet
+        # under java.io.tmpdir (FederationConfig.scala:266-267 → /tmp/softclient4es/scratch).
+        # A file DuckDB path (federation.duckdb.path != ":memory:") would also live here.
+        - name: scratch
+          emptyDir:
+            sizeLimit: {{ .Values.scratch.sizeLimit }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

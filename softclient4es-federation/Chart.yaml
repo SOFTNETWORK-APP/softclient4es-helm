@@ -1,0 +1,30 @@
+apiVersion: v2
+name: softclient4es-federation
+description: >-
+  SoftClient4ES multi-cluster federation — an Arrow Flight SQL server that
+  federates SQL queries (incl. cross-cluster JOINs) across one or more
+  per-Elasticsearch-version sidecars. This chart deploys the ES-agnostic
+  federation server; sidecars are added in a later chart revision.
+type: application
+# Chart version — bump on every chart change (SemVer).
+version: 0.1.0
+# The federation application/image version this chart deploys by default.
+# Keep in sync with docker.io/softnetwork/softclient4es-federation:<tag>.
+# NOTE: this appVersion is the future PUBLISHED-release tag (OQ-2) of the public
+# DockerHub federation image — set it to whatever tag the release/CI push (OQ-1)
+# produces; until then it is PROPOSED.
+appVersion: "0.2.0"
+keywords:
+  - elasticsearch
+  - flight-sql
+  - federation
+  - arrow
+  - sql
+  - duckdb
+home: https://softclient4es.dev
+sources:
+  - https://github.com/SOFTNETWORK-APP/softclient4es-helm
+maintainers:
+  - name: SOFTNETWORK
+    url: https://softclient4es.dev
+icon: https://softclient4es.dev/images/logo.png

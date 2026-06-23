@@ -1,0 +1,106 @@
+# Number of federation Pods. Default 1 — the federation is stateless wrt query
+# routing; HA scale-out is documented at >=2 in the operator guide (16.6).
+replicaCount: 1
+
+image:
+  repository: docker.io/softnetwork/softclient4es-federation
+  # Defaults to .Chart.AppVersion when empty; override for pinning or local images.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# For authenticated DockerHub pulls (rate-limit mitigation). List of {name: <secret>}.
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  automount: true
+
+# Federation config — maps 1:1 onto arrow.flight.federation.* (FEDERATION_* env).
+# Defaults VERIFIED against federation/src/main/resources/reference.conf.
+federation:
+  maxMemory: "512m"              # FEDERATION_MAX_MEMORY  (DuckDB SET memory_limit)
+  queryTimeoutSeconds: 30        # FEDERATION_QUERY_TIMEOUT
+  health:
+    port: 32021                  # FEDERATION_HEALTH_PORT (gRPC grpc.health.v1.Health)
+    probeTimeoutSeconds: 5       # FEDERATION_HEALTH_PROBE_TIMEOUT (also K8s probe timeoutSeconds)
+  duckdb:
+    # ":memory:" = in-memory only (default). A file path enables a persistent
+    # DuckDB catalog — R2b will recommend a path on a PersistentVolume. A file
+    # path under readOnlyRootFilesystem=true MUST be on a writable mount (e.g.
+    # under /tmp, which is the writable scratch emptyDir, or a PersistentVolume).
+    path: ":memory:"             # FEDERATION_DUCKDB_PATH
+  upgradeUrl: "https://portal.softclient4es.com/pricing"   # FEDERATION_UPGRADE_URL
+
+# Daily product-instance telemetry ping opt-out (Story 15.2/15.6). Top-level
+# softclient4es.telemetry.enabled → env SOFTCLIENT4ES_TELEMETRY_ENABLED.
+# DISTINCT from license.telemetry.enabled (refresh-metrics only). Set false to opt out.
+telemetry:
+  enabled: true
+
+# License credentials are referenced from a customer-provided K8s Secret (the chart
+# does NOT create Secrets — Story 16.3 covers secret-management patterns). Leave
+# secretName empty to run unlicensed (Community).
+license:
+  secretName: ""
+  licenseKeyKey: license-key    # Secret data key holding the JWT license -> SOFTCLIENT4ES_LICENSE_KEY
+  apiKeyKey: api-key            # Secret data key holding the API key      -> SOFTCLIENT4ES_API_KEY
+
+service:
+  type: ClusterIP
+  port: 32020                   # FEDERATION_PORT (Flight SQL)
+
+# Probes are TCP-socket (FACT A / A1). timeoutSeconds is taken from
+# federation.health.probeTimeoutSeconds in the Deployment template.
+probes:
+  liveness:
+    initialDelaySeconds: 20
+    periodSeconds: 15
+    failureThreshold: 3
+  readiness:
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    failureThreshold: 3         # aggressive for fast no-traffic routing per epic AC
+
+# Resource defaults sized for max-memory=512m DuckDB + JVM heap + Arrow off-heap
+# + DuckDB native. See Architecture Decision A4 for the math.
+resources:
+  requests:
+    memory: 1Gi
+    cpu: 500m
+  limits:
+    memory: 2Gi
+    cpu: 1000m
+
+# Writable scratch volume (emptyDir) mounted at /tmp so readOnlyRootFilesystem=true
+# still allows the DuckDB JNI native-lib extraction on boot + CTAS/INSERT-JOIN
+# Parquet staging + any non-:memory: DuckDB file.
+scratch:
+  sizeLimit: 2Gi
+
+# Pod-level security context (runAsNonRoot etc.).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1001
+  runAsGroup: 1001
+  fsGroup: 1001
+  seccompProfile:
+    type: RuntimeDefault
+
+# Container-level security context (hardening).
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1001
+  capabilities:
+    drop:
+      - ALL
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

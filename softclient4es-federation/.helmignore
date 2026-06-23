@@ -1,0 +1,12 @@
+# Patterns to ignore when building Helm packages.
+# tests/golden/ is intentionally NOT ignored — the golden baseline is committed.
+.DS_Store
+.git/
+.gitignore
+*.swp
+*.bak
+*.tmp
+*.orig
+*.tmproj
+.idea/
+.vscode/
