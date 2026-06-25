@@ -20,9 +20,13 @@ spec:
         - |
           set -e
           # If the image is NOT pre-baked, install ADBC at runtime (needs PyPI reachability).
-          python -c "import adbc_driver_flightsql" 2>/dev/null || \
+          # PyArrow is REQUIRED: the ADBC DBAPI layer materialises adbc_get_objects()
+          # results through pyarrow (read_all()), so without it GetCatalogs raises
+          # "This API requires PyArrow to be installed".
+          python -c "import adbc_driver_flightsql, pyarrow" 2>/dev/null || \
             pip install --quiet adbc_driver_flightsql=={{ .Values.test.adbcVersion | default "1.6.0" }} \
-                                adbc_driver_manager=={{ .Values.test.adbcVersion | default "1.6.0" }}
+                                adbc_driver_manager=={{ .Values.test.adbcVersion | default "1.6.0" }} \
+                                pyarrow{{ with .Values.test.pyarrowVersion }}=={{ . }}{{ end }}
           python - <<'PY'
           import sys, time
           import adbc_driver_flightsql.dbapi as dbapi

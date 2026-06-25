@@ -332,3 +332,4 @@ sidecarDefaults:
 test:
   image: ""                       # default "python:3.12-slim" when empty
   adbcVersion: "1.6.0"            # adbc_driver_flightsql / adbc_driver_manager version (runtime pip when image not pre-baked)
+  pyarrowVersion: ""              # optional pyarrow pin (REQUIRED by the ADBC DBAPI layer); empty = latest from pip
