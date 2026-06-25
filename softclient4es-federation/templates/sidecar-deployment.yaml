@@ -18,7 +18,7 @@ spec:
   template:
     metadata:
       labels:
-        {{- include "softclient4es-federation.sidecarSelectorLabels" (dict "ctx" $ "sidecar" $s) | nindent 8 }}
+        {{- include "softclient4es-federation.sidecarLabels" (dict "ctx" $ "sidecar" $s) | nindent 8 }}
     spec:
       serviceAccountName: {{ include "softclient4es-federation.serviceAccountName" $ }}
       {{- with $.Values.imagePullSecrets }}

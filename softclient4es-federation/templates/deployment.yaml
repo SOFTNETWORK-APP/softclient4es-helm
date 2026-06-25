@@ -17,7 +17,7 @@ spec:
   template:
     metadata:
       labels:
-        {{- include "softclient4es-federation.selectorLabels" . | nindent 8 }}
+        {{- include "softclient4es-federation.labels" . | nindent 8 }}
       {{- if gt (len .Values.sidecars) 0 }}
       annotations:
         # Roll the federation Pod whenever the rendered servers ConfigMap changes

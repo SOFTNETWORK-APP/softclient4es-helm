@@ -116,8 +116,13 @@ spec:
   template:
     metadata:
       labels:
+        helm.sh/chart: softclient4es-federation-0.3.0
         app.kubernetes.io/name: softclient4es-federation
         app.kubernetes.io/instance: fed
+        app.kubernetes.io/version: "0.2.0"
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/component: federation
+        app.kubernetes.io/part-of: softclient4es
       annotations:
         # Roll the federation Pod whenever the rendered servers ConfigMap changes
         # (add/remove/edit a sidecar) so `helm upgrade` actually takes effect.
@@ -254,10 +259,14 @@ spec:
   template:
     metadata:
       labels:
+        helm.sh/chart: softclient4es-federation-0.3.0
         app.kubernetes.io/name: softclient4es-federation
         app.kubernetes.io/instance: fed
         app.kubernetes.io/component: sidecar
         softclient4es.app/sidecar: primary
+        app.kubernetes.io/version: "0.2.0"
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/part-of: softclient4es
     spec:
       serviceAccountName: fed-softclient4es-federation
       securityContext:
