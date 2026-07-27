@@ -10,13 +10,15 @@ type: application
 # 0.2.0: per-ES-version sidecars + federation servers ConfigMap (Story 16.2).
 # 0.3.0: Kubernetes Secrets (key-name contract + per-key override + envFrom),
 #        Secret-backed federation→sidecar creds (CONFIG_FORCE_*), TLS/Ingress (Story 16.3).
-version: 0.3.0
+# 0.3.1: appVersion 0.2.1 — arrow-extensions JoinExtension priority fix
+#        (softclient4es-arrow#125) rolled into the federation + sidecar images.
+version: 0.3.1
 # The federation application/image version this chart deploys by default.
 # Keep in sync with docker.io/softnetwork/softclient4es-federation:<tag>.
 # NOTE: this appVersion is the future PUBLISHED-release tag (OQ-2) of the public
 # DockerHub federation image — set it to whatever tag the release/CI push (OQ-1)
 # produces; until then it is PROPOSED.
-appVersion: "0.2.0"
+appVersion: "0.2.1"
 keywords:
   - elasticsearch
   - flight-sql

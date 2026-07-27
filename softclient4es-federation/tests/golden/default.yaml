@@ -5,10 +5,10 @@ kind: ServiceAccount
 metadata:
   name: fed-softclient4es-federation
   labels:
-    helm.sh/chart: softclient4es-federation-0.3.0
+    helm.sh/chart: softclient4es-federation-0.3.1
     app.kubernetes.io/name: softclient4es-federation
     app.kubernetes.io/instance: fed
-    app.kubernetes.io/version: "0.2.0"
+    app.kubernetes.io/version: "0.2.1"
     app.kubernetes.io/managed-by: Helm
     app.kubernetes.io/component: federation
     app.kubernetes.io/part-of: softclient4es
@@ -20,10 +20,10 @@ kind: Service
 metadata:
   name: fed-softclient4es-federation
   labels:
-    helm.sh/chart: softclient4es-federation-0.3.0
+    helm.sh/chart: softclient4es-federation-0.3.1
     app.kubernetes.io/name: softclient4es-federation
     app.kubernetes.io/instance: fed
-    app.kubernetes.io/version: "0.2.0"
+    app.kubernetes.io/version: "0.2.1"
     app.kubernetes.io/managed-by: Helm
     app.kubernetes.io/component: federation
     app.kubernetes.io/part-of: softclient4es
@@ -44,10 +44,10 @@ kind: Deployment
 metadata:
   name: fed-softclient4es-federation
   labels:
-    helm.sh/chart: softclient4es-federation-0.3.0
+    helm.sh/chart: softclient4es-federation-0.3.1
     app.kubernetes.io/name: softclient4es-federation
     app.kubernetes.io/instance: fed
-    app.kubernetes.io/version: "0.2.0"
+    app.kubernetes.io/version: "0.2.1"
     app.kubernetes.io/managed-by: Helm
     app.kubernetes.io/component: federation
     app.kubernetes.io/part-of: softclient4es
@@ -60,10 +60,10 @@ spec:
   template:
     metadata:
       labels:
-        helm.sh/chart: softclient4es-federation-0.3.0
+        helm.sh/chart: softclient4es-federation-0.3.1
         app.kubernetes.io/name: softclient4es-federation
         app.kubernetes.io/instance: fed
-        app.kubernetes.io/version: "0.2.0"
+        app.kubernetes.io/version: "0.2.1"
         app.kubernetes.io/managed-by: Helm
         app.kubernetes.io/component: federation
         app.kubernetes.io/part-of: softclient4es
@@ -78,7 +78,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: federation
-          image: "docker.io/softnetwork/softclient4es-federation:0.2.0"
+          image: "docker.io/softnetwork/softclient4es-federation:0.2.1"
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
