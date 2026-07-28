@@ -50,6 +50,18 @@ if [ "${#VERSIONS[@]}" -gt "${#NAMES[@]}" ]; then
   exit 1
 fi
 
+# Pre-pull the ES images on the host and load them into the kind cluster: the node's
+# containerd would otherwise pull from docker.elastic.co in-cluster, and the ~1.4 GB
+# ES 8/9 images repeatedly hit ImagePullBackOff inside the 300s wait on GitHub runners.
+# The Deployment's tagged image + default IfNotPresent then uses the loaded copy, no pull.
+KIND_CLUSTER="$(kind get clusters | head -n 1)"
+for v in $(printf '%s\n' "${VERSIONS[@]}" | sort -u); do
+  image="$(es_image "$v")"
+  echo "Pre-pulling ${image} and loading it into kind cluster '${KIND_CLUSTER}'"
+  docker pull "$image"
+  kind load docker-image "$image" --name "$KIND_CLUSTER"
+done
+
 deploy_one() {
   local name="$1" version="$2" image
   image="$(es_image "$version")"
