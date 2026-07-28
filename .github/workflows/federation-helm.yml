@@ -61,7 +61,7 @@ env:
   KIND_NODE_IMAGE: kindest/node:v1.31.0
   # The chart's image refs default to the Chart.yaml appVersion. The live jobs pull the
   # public DockerHub tags at this version so the chart DEFAULTS resolve the kind-loaded images.
-  IMAGE_TAG: '0.2.0'
+  IMAGE_TAG: '0.2.1'
   FED_IMAGE: softnetwork/softclient4es-federation
   SIDECAR_IMAGE_PREFIX: softnetwork/softclient4es   # softclient4es<N>-arrow-flight-sql
   # A pre-baked ADBC client image avoids the smoke Job's runtime pip install (air-gap). When
