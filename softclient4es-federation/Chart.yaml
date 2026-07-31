@@ -17,12 +17,17 @@ type: application
 #        qualifier preserved on the AST→SQL round-trip, #159 bare-alias sort
 #        rejected) + extensions 0.2.1, rolled into the federation + sidecar
 #        images (softclient4es-arrow#126).
-version: 0.3.2
+# 0.3.3: appVersion 0.2.3 — elasticsql 0.20.2 (REPL epic: layered CLI config
+#        precedence, -all bundle packaging, AppCDS cold-start; fixes #168 es6
+#        log4j-api, #171 resolver SPI service, #172 watcher substitutions)
+#        + extensions 0.2.2 + async DuckDB native-library warm-up, rolled into
+#        the federation + sidecar images (softclient4es-arrow#128).
+version: 0.3.3
 # The federation application/image version this chart deploys by default.
 # Keep in sync with docker.io/softnetwork/softclient4es-federation:<tag>.
 # Verified published on DockerHub for the federation image AND all four
 # softclient4es{6,7,8,9}-arrow-flight-sql sidecar images.
-appVersion: "0.2.2"
+appVersion: "0.2.3"
 keywords:
   - elasticsearch
   - flight-sql
