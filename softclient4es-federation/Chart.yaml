@@ -22,12 +22,21 @@ type: application
 #        log4j-api, #171 resolver SPI service, #172 watcher substitutions)
 #        + extensions 0.2.2 + async DuckDB native-library warm-up, rolled into
 #        the federation + sidecar images (softclient4es-arrow#128).
-version: 0.3.3
+# 0.3.4: appVersion 0.2.4 — elasticsql 0.20.3 (R1 defect closures: local-file
+#        COPY INTO without Hadoop #183, ES client exception status preserved
+#        #184, single-table materialized views #185, and a DDL statement that
+#        can succeed WITH A WARNING) + extensions 0.2.3 (the refresh watcher is
+#        optional: a JOIN materialized view is created with a warning on a
+#        basic licence instead of rolling back) + arrow 0.2.4 (statement-kind
+#        routing allowlist — a DDL statement carrying a JOIN reaches the
+#        materialized-view extension, not the federation JOIN planner,
+#        softclient4es-arrow#130), rolled into the federation + sidecar images.
+version: 0.3.4
 # The federation application/image version this chart deploys by default.
 # Keep in sync with docker.io/softnetwork/softclient4es-federation:<tag>.
 # Verified published on DockerHub for the federation image AND all four
 # softclient4es{6,7,8,9}-arrow-flight-sql sidecar images.
-appVersion: "0.2.3"
+appVersion: "0.2.4"
 keywords:
   - elasticsearch
   - flight-sql
