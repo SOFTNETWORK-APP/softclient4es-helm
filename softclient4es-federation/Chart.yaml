@@ -31,12 +31,24 @@ type: application
 #        routing allowlist — a DDL statement carrying a JOIN reaches the
 #        materialized-view extension, not the federation JOIN planner,
 #        softclient4es-arrow#130), rolled into the federation + sidecar images.
-version: 0.3.4
+# 0.3.5: appVersion 0.2.5 — elasticsql 0.20.4 (completeness family: GROUP BY
+#        #205, window PARTITION BY #207, un-LIMITed SELECT #209 and explicit
+#        LIMIT above index.max_result_window #224 no longer truncate silently;
+#        PIT paging sorts by _doc and gates at 7.12 #197; strict
+#        whole-statement parsing #213) + extensions 0.2.4 (materialized-view
+#        error integrity: an outage is no longer reported as "does not exist"
+#        #45, a failed metadata table is no longer a quota breach #46) +
+#        arrow 0.2.5 (JOIN legs past 4,032 rows softclient4es-arrow#143, lazily
+#        streamed bounded legs #147, a writable bounded DuckDB spill directory
+#        #141, a real health probe #146, and the server images ship a default
+#        logback.xml so they no longer boot at ROOT DEBUG #138), rolled into the
+#        federation + sidecar images.
+version: 0.3.5
 # The federation application/image version this chart deploys by default.
 # Keep in sync with docker.io/softnetwork/softclient4es-federation:<tag>.
 # Verified published on DockerHub for the federation image AND all four
 # softclient4es{6,7,8,9}-arrow-flight-sql sidecar images.
-appVersion: "0.2.4"
+appVersion: "0.2.5"
 keywords:
   - elasticsearch
   - flight-sql
