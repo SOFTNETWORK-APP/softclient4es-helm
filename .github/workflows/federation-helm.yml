@@ -20,12 +20,13 @@
 # SKIPPED WITH A `::warning::` ANNOTATION (not failed). All static-validation gates run
 # UNCONDITIONALLY on every PR with zero external deps.
 #
-# LICENSE: the multi-sidecar (Pro) tiers are BEST-EFFORT, gated on TWO repo secrets
-# together (skip-not-fail if either missing), on top of image availability: (1) secret
-# SC4ES_PRO_TEST_JWT, (2) secret SC4ES_TEST_PUBLIC_KEY (injected as
-# SOFTCLIENT4ES_LICENSE_PUBLIC_KEY so the verifier resolves the test kid OFFLINE). The
-# published federation image must itself be Pro-capable (JWT-verifying SPI on classpath,
-# Story 16.1 OQ-5) for the Pro JWT to verify — an OSS-only image falls back to Community.
+# LICENSE: the multi-sidecar (Pro) tiers are BEST-EFFORT, gated on ONE repo secret
+# (skip-not-fail if missing), on top of image availability: SC4ES_PRO_TEST_JWT. As of
+# appVersion 0.3.0 the trust root is embedded in the image, so the JWT must be ISSUED BY
+# THE SOFTCLIENT4ES LICENCE SERVER — a self-signed test JWT can no longer be made to
+# verify by supplying its public key, and SC4ES_TEST_PUBLIC_KEY is gone. The published
+# federation image must itself be Pro-capable (JWT-verifying SPI on classpath, Story 16.1
+# OQ-5) for the Pro JWT to verify — an OSS-only image falls back to Community.
 # single-cluster + per-ES-version + secret backends + uninstall + ALL static gates are
 # license-free and run unconditionally (when the images are published).
 name: Federation Helm Chart
@@ -63,7 +64,7 @@ env:
   # public DockerHub tags at this version so the chart DEFAULTS resolve the kind-loaded images.
   # MUST match Chart.yaml appVersion — stale on the 0.2.2 train, reconciled on 0.2.3,
   # stale again on 0.2.4 (the chart bumped, this did not), reconciled on 0.2.5.
-  IMAGE_TAG: '0.2.5'
+  IMAGE_TAG: '0.3.0'
   FED_IMAGE: softnetwork/softclient4es-federation
   SIDECAR_IMAGE_PREFIX: softnetwork/softclient4es   # softclient4es<N>-arrow-flight-sql
   # A pre-baked ADBC client image avoids the smoke Job's runtime pip install (air-gap). When
@@ -138,6 +139,28 @@ jobs:
         run: |
           n=$(helm template fed "${CHART_DIR}" | grep -c '^kind: Secret' || true)
           [ "$n" = "0" ] || { echo "::error::chart must NOT render a kind:Secret (got $n)"; exit 1; }
+      - name: assert the removed licence public-key value fails LOUDLY (appVersion 0.3.0)
+        run: |
+          # The trust root is embedded in the image, so SOFTCLIENT4ES_LICENSE_PUBLIC_KEY is
+          # ignored. A value that used to decide HOW a licence is verified must not decay into a
+          # silent no-op, so the chart aborts the render instead. Both halves are asserted: that
+          # it fails, and that the message still NAMES the value — an abort whose text drifted
+          # into something generic would leave an operator with no idea what to remove.
+          if out=$(helm template fed "${CHART_DIR}" --set license.publicKeySecretName=x 2>&1); then
+            echo "::error::chart rendered with license.publicKeySecretName set — the guard is gone"
+            exit 1
+          fi
+          case "$out" in
+            *license.publicKeySecretName*is\ no\ longer\ supported*) : ;;
+            *) echo "::error::render aborted, but not with the actionable guard message:"; echo "$out"; exit 1 ;;
+          esac
+          # And the variable must appear in NO rendered manifest, under any committed values.
+          for f in "${CHART_DIR}/tests/values"/*.yaml "${CHART_DIR}/examples"/*/values.yaml; do
+            [ -f "$f" ] || continue
+            if helm template fed "${CHART_DIR}" -f "$f" | grep -q 'SOFTCLIENT4ES_LICENSE_PUBLIC_KEY'; then
+              echo "::error::$f still renders SOFTCLIENT4ES_LICENSE_PUBLIC_KEY"; exit 1
+            fi
+          done
       - name: heterogeneous-ready discriminator (16.4 A2b — only signal vs three-region)
         run: |
           # three-region and heterogeneous-ready goldens are BYTE-IDENTICAL by design (Helm
@@ -225,13 +248,13 @@ jobs:
       - name: Skip multi-sidecar install when no Pro test license (FACT C + FACT F, best-effort tier)
         id: lic
         if: ${{ matrix.license && steps.guard.outputs.skip != 'true' }}
-        # The 3-sidecar tier needs BOTH: a Pro test JWT and its public verification key (so the
-        # verifier resolves the test kid OFFLINE). Missing EITHER → SKIP (annotation), never fail.
-        # (The published federation image must itself be Pro-capable — 16.1 OQ-5 — for the JWT to
-        # verify; an OSS-only image silently falls back to Community and CrashLoops at 3 clusters.)
+        # The 3-sidecar tier needs a licence-server-issued Pro JWT. Missing → SKIP (annotation),
+        # never fail. (The published federation image must itself be Pro-capable — 16.1 OQ-5 — for
+        # the JWT to verify; an OSS-only image silently falls back to Community and CrashLoops at
+        # 3 clusters.)
         run: |
-          if [ -z "${{ secrets.SC4ES_PRO_TEST_JWT }}" ] || [ -z "${{ secrets.SC4ES_TEST_PUBLIC_KEY }}" ]; then
-            echo "::warning::missing SC4ES_PRO_TEST_JWT and/or SC4ES_TEST_PUBLIC_KEY — ${{ matrix.example }} (3 sidecars) needs a Pro JWT + its public key (FACT F #2); skipping (best-effort)"
+          if [ -z "${{ secrets.SC4ES_PRO_TEST_JWT }}" ]; then
+            echo "::warning::missing SC4ES_PRO_TEST_JWT — ${{ matrix.example }} (3 sidecars) needs a licence-server-issued Pro JWT; skipping (best-effort)"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
       - name: Set up Helm
@@ -258,30 +281,28 @@ jobs:
       - name: Deploy ES container(s) per sidecar (FACT D — reachable ES required)
         if: ${{ steps.guard.outputs.skip != 'true' && steps.lic.outputs.skip != 'true' }}
         run: ./.github/scripts/deploy-es.sh "${{ matrix.example }}" '${{ matrix.es }}'
-      - name: Create Pro license + public-key Secret (multi-sidecar only — FACT F #2)
+      - name: Create Pro license Secret (multi-sidecar only)
         if: ${{ matrix.license && steps.guard.outputs.skip != 'true' && steps.lic.outputs.skip != 'true' }}
         run: |
-          # ONE Secret carries both the JWT (license-key) and the public verification JWK
-          # (license-public-key → SOFTCLIENT4ES_LICENSE_PUBLIC_KEY, the air-gap path in
-          # LicenseKeyVerifier.loadPublicKey Step 3 — without it the test kid never resolves).
+          # JWT only. The verification key is embedded in the image as of appVersion 0.3.0, so
+          # there is no public-key half to supply any more.
           kubectl create secret generic sc4es-license \
-            --from-literal=license-key="${{ secrets.SC4ES_PRO_TEST_JWT }}" \
-            --from-literal=license-public-key="${{ secrets.SC4ES_TEST_PUBLIC_KEY }}"
+            --from-literal=license-key="${{ secrets.SC4ES_PRO_TEST_JWT }}"
           # The three-region example pins per-region license.secretName=sc4es-pro-license; also
           # create that name so its bearer-auth sidecars + the federation share the test token.
           kubectl create secret generic sc4es-pro-license \
-            --from-literal=license-key="${{ secrets.SC4ES_PRO_TEST_JWT }}" \
-            --from-literal=license-public-key="${{ secrets.SC4ES_TEST_PUBLIC_KEY }}" || true
+            --from-literal=license-key="${{ secrets.SC4ES_PRO_TEST_JWT }}" || true
       - name: helm install
         if: ${{ steps.guard.outputs.skip != 'true' && steps.lic.outputs.skip != 'true' }}
         run: |
           # The example values point sidecars[].elasticsearch.url at external https://*.example.com
           # placeholders. deploy-es.sh stands up in-cluster ES Services; override each URL to the
-          # matching plaintext in-cluster Service. license/public-key are pointed at sc4es-license
-          # for the multi-sidecar tier.
+          # matching plaintext in-cluster Service. The licence Secret is pointed at sc4es-license
+          # for the multi-sidecar tier. NOTE: --set license.publicKeySecretName would now ABORT
+          # the render by design (the chart fails on it as of appVersion 0.3.0).
           extra=""
           if [ "${{ matrix.license }}" = "true" ]; then
-            extra="--set license.secretName=sc4es-license --set license.publicKeySecretName=sc4es-license"
+            extra="--set license.secretName=sc4es-license"
           fi
           # The three-region/heterogeneous examples set sidecars[].auth.method=bearer pointing at
           # per-region sc4es-arrow-* Secrets that this CI does NOT create (the dedicated
@@ -447,12 +468,12 @@ jobs:
         run: sudo sysctl -w vm.max_map_count=262144
       - name: Skip if examples missing or no Pro test license (FACT C + FACT F)
         id: guard
-        # Upgrade ends at 3 clusters → same Pro gate as install-topology: JWT secret AND
-        # public-key secret (+ the published image must be Pro-capable, 16.1 OQ-5).
+        # Upgrade ends at 3 clusters → same Pro gate as install-topology: the JWT secret
+        # (+ the published image must be Pro-capable, 16.1 OQ-5).
         run: |
           if [ ! -f "${CHART_DIR}/examples/single-cluster/values.yaml" ] || [ ! -f "${CHART_DIR}/examples/three-region/values.yaml" ] \
-             || [ -z "${{ secrets.SC4ES_PRO_TEST_JWT }}" ] || [ -z "${{ secrets.SC4ES_TEST_PUBLIC_KEY }}" ]; then
-            echo "::warning::upgrade test needs both examples (16.4) + SC4ES_PRO_TEST_JWT + SC4ES_TEST_PUBLIC_KEY (and a Pro-capable image, FACT F); skipping"
+             || [ -z "${{ secrets.SC4ES_PRO_TEST_JWT }}" ]; then
+            echo "::warning::upgrade test needs both examples (16.4) + SC4ES_PRO_TEST_JWT (and a Pro-capable image, FACT F); skipping"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
       - name: Set up Helm
@@ -478,8 +499,7 @@ jobs:
           ./.github/scripts/deploy-es.sh secrets '8'
           for n in sc4es-license sc4es-pro-license; do
             kubectl create secret generic "$n" \
-              --from-literal=license-key="${{ secrets.SC4ES_PRO_TEST_JWT }}" \
-              --from-literal=license-public-key="${{ secrets.SC4ES_TEST_PUBLIC_KEY }}" || true
+              --from-literal=license-key="${{ secrets.SC4ES_PRO_TEST_JWT }}" || true
           done
           helm install fed "${CHART_DIR}" -f "${CHART_DIR}/examples/single-cluster/values.yaml" \
             ${TEST_ADBC_IMAGE:+--set test.image=$TEST_ADBC_IMAGE} \
@@ -493,7 +513,7 @@ jobs:
           # + catalog count, not the per-region bearer Secrets (which it does not create).
           helm upgrade fed "${CHART_DIR}" -f "${CHART_DIR}/examples/three-region/values.yaml" \
             ${TEST_ADBC_IMAGE:+--set test.image=$TEST_ADBC_IMAGE} \
-            --set license.secretName=sc4es-license --set license.publicKeySecretName=sc4es-license \
+            --set license.secretName=sc4es-license \
             --set sidecars[0].elasticsearch.url=http://es-us-east-1:9200 \
             --set sidecars[1].elasticsearch.url=http://es-eu-west-1:9200 \
             --set sidecars[2].elasticsearch.url=http://es-ap-south-1:9200 \

@@ -88,8 +88,8 @@ helm uninstall fed
 | `federation.upgradeUrl` | `https://portal.softclient4es.com/pricing` | `FEDERATION_UPGRADE_URL`. |
 | `telemetry.enabled` | `true` | `SOFTCLIENT4ES_TELEMETRY_ENABLED` daily-ping opt-out (`false` opts out). |
 | `license.secretName` | `""` | Secret holding license/API key; empty = Community. |
-| `license.publicKeySecretName` | `""` | Secret holding the Ed25519 public JWK for OFFLINE license verification → `SOFTCLIENT4ES_LICENSE_PUBLIC_KEY`; empty = use JWKS fetch. |
-| `license.publicKeyKey` | `license-public-key` | Data key within `license.publicKeySecretName`. |
+| `license.publicKeySecretName` | `""` | **Removed in appVersion 0.3.0** — the trust root is embedded in the image. Setting it aborts the render. Leave empty. |
+| `license.publicKeyKey` | `""` | **Removed in appVersion 0.3.0** — see above. Leave empty. |
 | `service.type` | `ClusterIP` | Service type. |
 | `service.port` | `32020` | `FEDERATION_PORT` (Flight SQL); the only port exposed by the Service. |
 | `resources` | req `1Gi`/`500m`, lim `2Gi`/`1000m` | Container resource requests/limits. |
@@ -194,12 +194,11 @@ The test Pod defaults to `python:3.12-slim` and `pip install`s the ADBC driver a
 with `--set test.image=<image>` (and `--set test.adbcVersion=<v>` to control the driver version
 when the runtime install IS used). This is the same Job CI runs.
 
-> **Offline license verification (`license.publicKeySecretName`).** When the federation must
-> verify a license JWT WITHOUT reaching the license server's JWKS endpoint (air-gapped clusters,
-> or a JWT whose `kid` is not in the prod JWKS), set `license.publicKeySecretName` to a Secret
-> whose `license.publicKeyKey` data key holds the matching Ed25519 public JWK. It is mounted as
-> `SOFTCLIENT4ES_LICENSE_PUBLIC_KEY` (the air-gap path in the license verifier). Leave empty (the
-> default) to use the normal JWKS fetch — it renders nothing, so the golden render is unaffected.
+> **Offline license verification (appVersion 0.3.0 and later).** Nothing to configure. The
+> licence trust root is embedded in the image, so a licence issued by the SoftClient4ES licence
+> server verifies with no network access and no extra values — air-gapped clusters included.
+> `SOFTCLIENT4ES_LICENSE_PUBLIC_KEY` is no longer consulted, and `license.publicKeySecretName`
+> now **aborts the render** rather than becoming a silent no-op. Remove it from your values.
 
 ## Secrets, TLS & Ingress
 
@@ -372,9 +371,9 @@ than fail — the static-validation gates run unconditionally on every PR with z
 
 \* The multi-cluster (Pro) tiers run only when ALL of: (1) the federation image bundles the
 JWT-verifying SPI (a **Pro-capable** image — an OSS-only image ships only the Community SPI and
-cannot verify ANY Pro JWT), (2) the `SC4ES_PRO_TEST_JWT` repo secret, and (3) the
-`SC4ES_TEST_PUBLIC_KEY` repo secret (injected as `SOFTCLIENT4ES_LICENSE_PUBLIC_KEY` via
-`license.publicKeySecretName` so the JWT verifies offline) are present. Otherwise they are
+cannot verify ANY Pro JWT), and (2) the `SC4ES_PRO_TEST_JWT` repo secret, holding a JWT **issued
+by the SoftClient4ES licence server** (since appVersion 0.3.0 a self-signed test JWT can no longer
+be made to verify by supplying its public key) are present. Otherwise they are
 **skipped with a CI annotation** (not a failure). A **single-cluster** federation is license-FREE
 (Community `maxClusters=1`) and is always tested; the static three-region/heterogeneous golden
 proves the mixed-version RENDER on every PR even when the live multi-cluster install is skipped.
@@ -397,7 +396,7 @@ failed. The golden gate renders with NO `--set image.tag`.
 | `kubeconform` invalid resource | a manifest field renamed/typo (e.g. `replicaCount` vs `replicas`) | fix the template; `replicas` is the Deployment field |
 | `heterogeneous-ready` discriminator fails | `three-region` and `heterogeneous-ready` overlays drifted (one copied over the other) | restore the commented R2b `duckdb-attach` preview in `heterogeneous-ready` (the goldens are byte-identical — this grep is the only signal) |
 | federation pod CrashLoopBackOff (3 sidecars, license supplied but Community at runtime) | the image lacks the JWT SPI — it cannot verify the Pro JWT → falls back to Community → `maxClusters=1` exceeded | use a Pro-CAPABLE federation image (JWT SPI on classpath, 16.1 OQ-5); injecting a JWT into an OSS-only image does nothing |
-| federation pod CrashLoopBackOff (`InvalidLicense: Unknown key ID: …`) | the JWT verification key didn't resolve (no JWKS entry for the kid AND no `SOFTCLIENT4ES_LICENSE_PUBLIC_KEY`) | set `license.publicKeySecretName` → `SOFTCLIENT4ES_LICENSE_PUBLIC_KEY` (the offline verifier path), or ensure the license-server JWKS carries the kid |
+| federation pod CrashLoopBackOff (`InvalidLicense: Unknown key ID: …`) | the JWT was not signed by a key this image trusts — as of appVersion 0.3.0 the trust root is embedded, so a self-signed or test-signed JWT can no longer be made to verify | use a licence issued by the SoftClient4ES licence server. Supplying a public key is no longer possible and `license.publicKeySecretName` now aborts the render |
 | federation pod CrashLoopBackOff (3 sidecars, no license at all) | Community `maxClusters=1` exceeded | supply a Pro/Enterprise license (`license.secretName`) — by design |
 | federation pod CrashLoopBackOff (`validate()` / `FlightCredentials`) | Secret-backed cred didn't arrive (wrong key / ESO sync lag) | check the Secret exists + keys match the contract table above; self-heals on next restart |
 | federation NotReady, smoke connect-refused | a sidecar's backing ES is down/unreachable (all-or-nothing gRPC readiness) | ensure every sidecar's ES is reachable; or set `federation.probes.useGrpc=false` for partial availability |

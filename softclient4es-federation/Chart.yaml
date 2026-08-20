@@ -43,12 +43,28 @@ type: application
 #        #141, a real health probe #146, and the server images ship a default
 #        logback.xml so they no longer boot at ROOT DEBUG #138), rolled into the
 #        federation + sidecar images.
-version: 0.3.5
+# 0.3.6: appVersion 0.3.0 — elasticsql 0.21.0 (sliced PIT row extraction #238:
+#        one reader per primary shard, merged into a single stream, with a new
+#        `elastic.scroll { size, max-slices }` HOCON surface and ELASTIC_SCROLL_*
+#        env overrides; row order of an un-ordered extraction now INTERLEAVES
+#        across slices, and a quota-capped result is an arbitrary subset)
+#        + extensions 0.3.0 + arrow 0.3.0 (the advertised-schema probe is
+#        bounded, so a LIMITed SELECT no longer hits Elasticsearch a second time
+#        softclient4es-arrow#163), rolled into the federation + sidecar images.
+#        BREAKING (chart): the licence trust root is now embedded in the image, so
+#        SOFTCLIENT4ES_LICENSE_PUBLIC_KEY is no longer consulted. `license.
+#        publicKeySecretName` / `publicKeyKey` are retained ONLY to abort the render
+#        with an actionable message — a value that used to decide HOW a licence is
+#        verified must not decay into a silent no-op. Remove them from your values.
+#        A licence issued by the SoftClient4ES licence server verifies with no extra
+#        configuration, air-gapped clusters included; a self-signed JWT can no longer
+#        be made to verify by supplying its public key.
+version: 0.3.6
 # The federation application/image version this chart deploys by default.
 # Keep in sync with docker.io/softnetwork/softclient4es-federation:<tag>.
 # Verified published on DockerHub for the federation image AND all four
 # softclient4es{6,7,8,9}-arrow-flight-sql sidecar images.
-appVersion: "0.2.5"
+appVersion: "0.3.0"
 keywords:
   - elasticsearch
   - flight-sql
