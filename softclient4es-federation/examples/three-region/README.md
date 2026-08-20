@@ -29,10 +29,10 @@ kubectl create secret generic sc4es-pro-license --from-literal=license-key="$SC4
 > bundled ONLY in the Pro/Enterprise-capable federation image. The Community/OSS image
 > ships only the Community license manager, so it ignores any injected JWT, resolves to
 > Community (`maxClusters=1`), and **still CrashLoops** on this 3-cluster example. The
-> image must ALSO be able to resolve the license SIGNING public key offline (env
-> `SOFTCLIENT4ES_LICENSE_PUBLIC_KEY`, or the issuer's JWKS endpoint must be reachable).
-> Use a Pro/Enterprise-entitled federation image + provision the public key; consult the
-> licensing/operator guide for the exact image + key provisioning. This precondition is
+> As of appVersion 0.3.0 the signing trust root is embedded in the image, so no key needs
+> provisioning — but the JWT must be one the SoftClient4ES licence server issued.
+> Use a Pro/Enterprise-entitled federation image; consult the licensing/operator guide for
+> the exact image. This precondition is
 > tracked for the CI/install path (Story 16.5 FACT F / Story 16.1 OQ-5). A bare
 > `--set image.tag` of the OSS snapshot image WILL CrashLoop even with a valid JWT Secret.
 

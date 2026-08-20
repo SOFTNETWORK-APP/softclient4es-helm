@@ -115,16 +115,17 @@ license:
   secretName: ""
   licenseKeyKey: license-key    # Secret data key holding the JWT license -> SOFTCLIENT4ES_LICENSE_KEY
   apiKeyKey: api-key            # Secret data key holding the API key      -> SOFTCLIENT4ES_API_KEY
-  # ── Offline license public-key (Story 16.5, FACT F #2) ────────────────────────
-  # OPTIONAL. When the federation must verify a license JWT WITHOUT reaching the
-  # license server's JWKS endpoint (air-gapped clusters, or a test-signed JWT whose
-  # `kid` is not in the prod JWKS), point publicKeySecretName at a Secret whose
-  # `publicKeyKey` data key holds the matching Ed25519 public JWK. It is mounted as
-  # SOFTCLIENT4ES_LICENSE_PUBLIC_KEY — the air-gap path in LicenseKeyVerifier.loadPublicKey
-  # (Step 3, VERIFIED). Leave empty (the default) to use the normal JWKS fetch. Renders
-  # NOTHING when empty, so the golden render and every shipped example are unaffected.
+  # ── Offline license public-key — REMOVED in appVersion 0.3.0 ─────────────────
+  # The licence trust root is now embedded in the image, so a licence issued by the
+  # SoftClient4ES licence server verifies with NO extra configuration, air-gapped or
+  # not. SOFTCLIENT4ES_LICENSE_PUBLIC_KEY is no longer consulted.
+  #
+  # These keys are retained ONLY so the chart can fail loudly if they are still set:
+  # a value that used to change how a licence is verified must not become a silent
+  # no-op. Setting publicKeySecretName aborts the render with an actionable message.
+  # Leave both empty.
   publicKeySecretName: ""
-  publicKeyKey: license-public-key   # Secret data key holding the Ed25519 public JWK -> SOFTCLIENT4ES_LICENSE_PUBLIC_KEY
+  publicKeyKey: ""
 
 service:
   type: ClusterIP

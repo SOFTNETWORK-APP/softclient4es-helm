@@ -3,6 +3,15 @@
        CONFIG_FORCE_* credential env from the SAME Secret the sidecar reads. */ -}}
 {{- $secretAuth := false }}
 {{- range $s := .Values.sidecars }}{{- if and $s.auth (ne (lower (default "none" $s.auth.method)) "none") $s.auth.credentialsSecretName }}{{- $secretAuth = true }}{{- end }}{{- end }}
+{{- /* appVersion 0.3.0: the licence trust root is now embedded in the image and
+       SOFTCLIENT4ES_LICENSE_PUBLIC_KEY is no longer consulted. This value used to decide
+       HOW a licence was verified, so quietly dropping it would leave an operator believing
+       an offline key is still in force. Fail the render instead, so it surfaces at
+       `helm upgrade` rather than as a CrashLoopBackOff. Nothing fires at the "" default,
+       so every committed golden stays byte-stable. */ -}}
+{{- if .Values.license.publicKeySecretName }}
+{{- fail "license.publicKeySecretName is no longer supported: as of appVersion 0.3.0 the licence trust root is embedded in the image, and SOFTCLIENT4ES_LICENSE_PUBLIC_KEY is ignored. Remove license.publicKeySecretName (and license.publicKeyKey). A licence issued by the SoftClient4ES licence server verifies with no extra configuration." }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -76,19 +85,6 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.license.secretName }}
                   key: {{ .Values.license.apiKeyKey | default "api-key" }}
-                  optional: true
-            {{- end }}
-            {{- /* Story 16.5 (FACT F #2): offline license public-key for air-gapped /
-                   test-signed JWT verification (LicenseKeyVerifier.loadPublicKey Step 3).
-                   Gated INDEPENDENTLY of license.secretName so the multi-sidecar CI can
-                   point it at the same Secret. Renders nothing at the "" default, so the
-                   golden and every example are byte-stable. */}}
-            {{- if .Values.license.publicKeySecretName }}
-            - name: SOFTCLIENT4ES_LICENSE_PUBLIC_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.license.publicKeySecretName }}
-                  key: {{ .Values.license.publicKeyKey | default "license-public-key" }}
                   optional: true
             {{- end }}
             {{- if gt (len .Values.sidecars) 0 }}

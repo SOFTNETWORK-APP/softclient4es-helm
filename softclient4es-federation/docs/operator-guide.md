@@ -116,7 +116,7 @@ See [`examples/heterogeneous-ready/README.md`](../examples/heterogeneous-ready/R
 | `federation.probes.useGrpc` | — (probe wiring) | — | true |
 | `federation.tls.{enabled,secretName}` | — (Ingress) | — | false |
 | `ingress.{enabled,className,annotations,hosts,tls}` | — (Ingress) | — | false |
-| `license.publicKeySecretName` (+ `license.publicKeyKey`) | — | `SOFTCLIENT4ES_LICENSE_PUBLIC_KEY` | `""` / `license-public-key` |
+| `license.publicKeySecretName` (+ `license.publicKeyKey`) | — | *(removed in appVersion 0.3.0 — setting it aborts the render)* | `""` / `""` |
 
 **Sidecar** (per `sidecars[]`; image auto-selected by `elasticsearchVersion`; HOCON root `arrow.flight.*` + elasticsql core `elastic.credentials.*`):
 
@@ -170,7 +170,7 @@ The federation reads its license from a referenced Secret as `SOFTCLIENT4ES_LICE
 
 Exceeding the quota → the federation logs the over-quota error and `sys.exit(1)` → **CrashLoopBackOff by design** (see §10). Federation is NOT a paid feature — single-cluster is the free adoption tier; the quota is on *cluster count*. To opt out of the daily anonymous usage ping, set `telemetry.enabled: false` (→ `SOFTCLIENT4ES_TELEMETRY_ENABLED=false`); this has zero impact on functionality or your license.
 
-> **Offline verification.** For air-gapped or strict-egress clusters, mount the Ed25519 public JWK via `license.publicKeySecretName` (key `license.publicKeyKey`, default `license-public-key`) → `SOFTCLIENT4ES_LICENSE_PUBLIC_KEY`. This lets the federation verify a Pro/Enterprise JWT entirely offline (no portal round-trip). It is gated independently of `license.secretName`.
+> **Offline verification.** Nothing to configure as of appVersion 0.3.0. The licence trust root is embedded in the image, so a Pro/Enterprise licence issued by the SoftClient4ES licence server verifies entirely offline — air-gapped and strict-egress clusters included — with no portal round-trip and no public key to mount. `SOFTCLIENT4ES_LICENSE_PUBLIC_KEY` is no longer consulted, and `license.publicKeySecretName` now aborts the render instead of silently doing nothing.
 
 ## 8. ES-version mixing & migration
 
