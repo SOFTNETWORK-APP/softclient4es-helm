@@ -59,12 +59,26 @@ type: application
 #        A licence issued by the SoftClient4ES licence server verifies with no extra
 #        configuration, air-gapped clusters included; a self-signed JWT can no longer
 #        be made to verify by supplying its public key.
-version: 0.3.6
+# 0.3.7: appVersion 0.3.1 — elasticsql 0.22.0 (parse rejections name the SQL
+#        statement instead of mislabelling every one a schema DDL error
+#        SoftClient4ES#262; FROM-less `SELECT 1`, the connection/health idiom of
+#        Tableau and Superset, is accepted and answered SoftClient4ES#251; the
+#        log4j closure repair SoftClient4ES#259 — the images no longer ship
+#        log4j-core without log4j-api, which made any provider scan fail with a
+#        bare NoClassDefFoundError softclient4es-arrow#167) + extensions 0.3.1
+#        + arrow 0.3.1 (JOIN date columns survive extraction and read back as
+#        values instead of crashing or coming back silently NULL
+#        softclient4es-arrow#168; `ES_*` env spellings are accepted as deprecated
+#        aliases of the canonical `ELASTIC_*` family, removed in 0.5.0
+#        softclient4es-arrow#169; character columns advertise a usable width so
+#        BI clients stop truncating them softclient4es-arrow#171), rolled into
+#        the federation + sidecar images. No chart-contract change.
+version: 0.3.7
 # The federation application/image version this chart deploys by default.
 # Keep in sync with docker.io/softnetwork/softclient4es-federation:<tag>.
 # Verified published on DockerHub for the federation image AND all four
 # softclient4es{6,7,8,9}-arrow-flight-sql sidecar images.
-appVersion: "0.3.0"
+appVersion: "0.3.1"
 keywords:
   - elasticsearch
   - flight-sql
