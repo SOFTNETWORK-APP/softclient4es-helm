@@ -64,7 +64,7 @@ env:
   # public DockerHub tags at this version so the chart DEFAULTS resolve the kind-loaded images.
   # MUST match Chart.yaml appVersion — stale on the 0.2.2 train, reconciled on 0.2.3,
   # stale again on 0.2.4 (the chart bumped, this did not), reconciled on 0.2.5.
-  IMAGE_TAG: '0.3.0'
+  IMAGE_TAG: '0.3.1'
   FED_IMAGE: softnetwork/softclient4es-federation
   SIDECAR_IMAGE_PREFIX: softnetwork/softclient4es   # softclient4es<N>-arrow-flight-sql
   # A pre-baked ADBC client image avoids the smoke Job's runtime pip install (air-gap). When
