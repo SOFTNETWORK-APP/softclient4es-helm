@@ -5,10 +5,10 @@ kind: ServiceAccount
 metadata:
   name: fed-softclient4es-federation
   labels:
-    helm.sh/chart: softclient4es-federation-0.3.7
+    helm.sh/chart: softclient4es-federation-0.3.8
     app.kubernetes.io/name: softclient4es-federation
     app.kubernetes.io/instance: fed
-    app.kubernetes.io/version: "0.3.1"
+    app.kubernetes.io/version: "0.3.3"
     app.kubernetes.io/managed-by: Helm
     app.kubernetes.io/component: federation
     app.kubernetes.io/part-of: softclient4es
@@ -20,10 +20,10 @@ kind: ConfigMap
 metadata:
   name: fed-softclient4es-federation-config
   labels:
-    helm.sh/chart: softclient4es-federation-0.3.7
+    helm.sh/chart: softclient4es-federation-0.3.8
     app.kubernetes.io/name: softclient4es-federation
     app.kubernetes.io/instance: fed
-    app.kubernetes.io/version: "0.3.1"
+    app.kubernetes.io/version: "0.3.3"
     app.kubernetes.io/managed-by: Helm
     app.kubernetes.io/component: federation
     app.kubernetes.io/part-of: softclient4es
@@ -49,10 +49,10 @@ kind: Service
 metadata:
   name: fed-softclient4es-federation
   labels:
-    helm.sh/chart: softclient4es-federation-0.3.7
+    helm.sh/chart: softclient4es-federation-0.3.8
     app.kubernetes.io/name: softclient4es-federation
     app.kubernetes.io/instance: fed
-    app.kubernetes.io/version: "0.3.1"
+    app.kubernetes.io/version: "0.3.3"
     app.kubernetes.io/managed-by: Helm
     app.kubernetes.io/component: federation
     app.kubernetes.io/part-of: softclient4es
@@ -73,12 +73,12 @@ kind: Service
 metadata:
   name: fed-softclient4es-federation-primary
   labels:
-    helm.sh/chart: softclient4es-federation-0.3.7
+    helm.sh/chart: softclient4es-federation-0.3.8
     app.kubernetes.io/name: softclient4es-federation
     app.kubernetes.io/instance: fed
     app.kubernetes.io/component: sidecar
     softclient4es.app/sidecar: primary
-    app.kubernetes.io/version: "0.3.1"
+    app.kubernetes.io/version: "0.3.3"
     app.kubernetes.io/managed-by: Helm
     app.kubernetes.io/part-of: softclient4es
 spec:
@@ -100,10 +100,10 @@ kind: Deployment
 metadata:
   name: fed-softclient4es-federation
   labels:
-    helm.sh/chart: softclient4es-federation-0.3.7
+    helm.sh/chart: softclient4es-federation-0.3.8
     app.kubernetes.io/name: softclient4es-federation
     app.kubernetes.io/instance: fed
-    app.kubernetes.io/version: "0.3.1"
+    app.kubernetes.io/version: "0.3.3"
     app.kubernetes.io/managed-by: Helm
     app.kubernetes.io/component: federation
     app.kubernetes.io/part-of: softclient4es
@@ -116,17 +116,17 @@ spec:
   template:
     metadata:
       labels:
-        helm.sh/chart: softclient4es-federation-0.3.7
+        helm.sh/chart: softclient4es-federation-0.3.8
         app.kubernetes.io/name: softclient4es-federation
         app.kubernetes.io/instance: fed
-        app.kubernetes.io/version: "0.3.1"
+        app.kubernetes.io/version: "0.3.3"
         app.kubernetes.io/managed-by: Helm
         app.kubernetes.io/component: federation
         app.kubernetes.io/part-of: softclient4es
       annotations:
         # Roll the federation Pod whenever the rendered servers ConfigMap changes
         # (add/remove/edit a sidecar) so `helm upgrade` actually takes effect.
-        checksum/config: 6adcff0ecdd0846c8f6633c0115f22af5f2c67ae78e1d5360665c912bef91edb
+        checksum/config: bcba04fcfce2e85825bce912a0500384991961fdc0355c5fca02797b0a5a239c
     spec:
       serviceAccountName: fed-softclient4es-federation
       securityContext:
@@ -138,7 +138,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: federation
-          image: "docker.io/softnetwork/softclient4es-federation:0.3.1"
+          image: "docker.io/softnetwork/softclient4es-federation:0.3.3"
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
@@ -240,12 +240,12 @@ kind: Deployment
 metadata:
   name: fed-softclient4es-federation-primary
   labels:
-    helm.sh/chart: softclient4es-federation-0.3.7
+    helm.sh/chart: softclient4es-federation-0.3.8
     app.kubernetes.io/name: softclient4es-federation
     app.kubernetes.io/instance: fed
     app.kubernetes.io/component: sidecar
     softclient4es.app/sidecar: primary
-    app.kubernetes.io/version: "0.3.1"
+    app.kubernetes.io/version: "0.3.3"
     app.kubernetes.io/managed-by: Helm
     app.kubernetes.io/part-of: softclient4es
 spec:
@@ -259,12 +259,12 @@ spec:
   template:
     metadata:
       labels:
-        helm.sh/chart: softclient4es-federation-0.3.7
+        helm.sh/chart: softclient4es-federation-0.3.8
         app.kubernetes.io/name: softclient4es-federation
         app.kubernetes.io/instance: fed
         app.kubernetes.io/component: sidecar
         softclient4es.app/sidecar: primary
-        app.kubernetes.io/version: "0.3.1"
+        app.kubernetes.io/version: "0.3.3"
         app.kubernetes.io/managed-by: Helm
         app.kubernetes.io/part-of: softclient4es
     spec:
@@ -278,7 +278,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: sidecar
-          image: "docker.io/softnetwork/softclient4es8-arrow-flight-sql:0.3.1"
+          image: "docker.io/softnetwork/softclient4es8-arrow-flight-sql:0.3.3"
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
@@ -394,10 +394,10 @@ kind: Pod
 metadata:
   name: fed-softclient4es-federation-test-catalogs
   labels:
-    helm.sh/chart: softclient4es-federation-0.3.7
+    helm.sh/chart: softclient4es-federation-0.3.8
     app.kubernetes.io/name: softclient4es-federation
     app.kubernetes.io/instance: fed
-    app.kubernetes.io/version: "0.3.1"
+    app.kubernetes.io/version: "0.3.3"
     app.kubernetes.io/managed-by: Helm
     app.kubernetes.io/component: federation
     app.kubernetes.io/part-of: softclient4es

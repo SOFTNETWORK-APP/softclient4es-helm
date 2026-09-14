@@ -73,12 +73,12 @@ type: application
 #        softclient4es-arrow#169; character columns advertise a usable width so
 #        BI clients stop truncating them softclient4es-arrow#171), rolled into
 #        the federation + sidecar images. No chart-contract change.
-version: 0.3.7
+version: 0.3.8
 # The federation application/image version this chart deploys by default.
 # Keep in sync with docker.io/softnetwork/softclient4es-federation:<tag>.
 # Verified published on DockerHub for the federation image AND all four
 # softclient4es{6,7,8,9}-arrow-flight-sql sidecar images.
-appVersion: "0.3.1"
+appVersion: "0.3.3"
 keywords:
   - elasticsearch
   - flight-sql
