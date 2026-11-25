@@ -210,7 +210,7 @@ jobs:
 
   # ── 3. PER-TOPOLOGY INSTALL — single-cluster (license-free) + 3-cluster (Pro) ─
   install-topology:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04   # kind load of a multi-arch image fails on ubuntu-26.04 (ctr: content digest not found)
     needs: [static-checks, image-availability]
     if: ${{ needs.image-availability.outputs.images_published == 'true' }}
     strategy:
@@ -341,7 +341,7 @@ jobs:
 
   # ── 4. PER-ES-VERSION SIDECAR MATRIX — 1 sidecar each (license-free) ────────
   install-es-version:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04   # kind load of a multi-arch image fails on ubuntu-26.04 (ctr: content digest not found)
     needs: [static-checks, image-availability]
     if: ${{ needs.image-availability.outputs.images_published == 'true' }}
     strategy:
@@ -392,7 +392,7 @@ jobs:
 
   # ── 5. SECRET MANAGEMENT — raw Secret + SealedSecrets (1 sidecar, license-free) ─
   install-secrets:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04   # kind load of a multi-arch image fails on ubuntu-26.04 (ctr: content digest not found)
     needs: [static-checks, image-availability]
     if: ${{ needs.image-availability.outputs.images_published == 'true' }}
     strategy:
@@ -455,7 +455,7 @@ jobs:
 
   # ── 6. UPGRADE — single-cluster -> three-region (Pro license, best-effort) ──
   upgrade:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04   # kind load of a multi-arch image fails on ubuntu-26.04 (ctr: content digest not found)
     needs: [static-checks, image-availability]
     if: ${{ needs.image-availability.outputs.images_published == 'true' }}
     steps:
@@ -532,7 +532,7 @@ jobs:
 
   # ── 7. UNINSTALL — clean teardown, no leftovers (license-free, 0 sidecars) ──
   uninstall:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04   # kind load of a multi-arch image fails on ubuntu-26.04 (ctr: content digest not found)
     needs: [static-checks, image-availability]
     if: ${{ needs.image-availability.outputs.images_published == 'true' }}
     steps:
